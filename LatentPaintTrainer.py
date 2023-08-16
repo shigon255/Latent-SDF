@@ -89,7 +89,7 @@ class LatentPaintTrainer:
         self.past_checkpoints = []
         if self.cfg.optim.resume:
             self.load_checkpoint(model_only=False)
-        if args.loadFromNeus:
+        if args.load_from_neus:
             self.load_checkpoint_only_sdf(args.neus_ckpt_path)
         if self.cfg.optim.ckpt is not None:
             self.load_checkpoint(self.cfg.optim.ckpt, model_only=True)

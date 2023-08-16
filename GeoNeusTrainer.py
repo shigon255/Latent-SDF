@@ -729,7 +729,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     torch.cuda.set_device(args.gpu)
-    runner = Runner(args.conf, args.mode, args.case, args.is_continue, args.checkpoint, args.suffix)
+    runner = GeoNeusTrainer(args.conf, args.mode, args.case, args.is_continue, args.checkpoint, args.suffix)
 
     if args.mode == 'train':
         runner.train()

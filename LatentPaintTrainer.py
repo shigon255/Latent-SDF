@@ -44,7 +44,7 @@ class LatentPaintTrainer:
         neus_cfg_text = neus_cfg_text.replace('CASE_NAME', args.case)
         f.close()
         self.neus_cfg = ConfigFactory.parse_string(neus_cfg_text)
-        self.neus_cfg['dataset.data_dir'] = self.neus_cfg['dataset.data_dir'].replace('CASE_NAME', case)
+        self.neus_cfg['dataset.data_dir'] = self.neus_cfg['dataset.data_dir'].replace('CASE_NAME', args.case)
 
         utils.seed_everything(self.cfg.optim.seed)
 
@@ -71,6 +71,14 @@ class LatentPaintTrainer:
         params_to_train += list(self.nerf_outside.parameters())
         params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.color_network.parameters())
+
+        self.renderer = LatentPaintRenderer(self.nerf_outside, 
+                                                self.sdf_network,
+                                                self.deviation_network,
+                                                self.color_network,
+                                                **self.conf['models.neus_renderer']
+                                                )
+        self.use_white_bkgd = args.use_white_bkgd
 
         self.diffusion = self.init_diffusion()
         self.text_z = self.calc_text_embeddings()
@@ -200,6 +208,8 @@ class LatentPaintTrainer:
         for i, data in enumerate(dataloader):
             preds, textures = self.eval_render(data)
 
+            # tensor 2 image, note that the color range will transform from [0, 1] to [0, 255]
+            # and the tensor will be detach()
             pred = tensor2numpy(preds[0])
 
             if save_as_video:
@@ -207,9 +217,13 @@ class LatentPaintTrainer:
             else:
                 Image.fromarray(pred).save(save_path / f"step_{self.train_step:05d}_{i:04d}_rgb.png")
 
+        '''
+        Project
+        No texture can be shown/saved
+        '''
         # Texture map is the same, so just take the last result
-        texture = tensor2numpy(textures[0])
-        Image.fromarray(texture).save(save_path / f"step_{self.train_step:05d}_texture.png")
+        # texture = tensor2numpy(textures[0])
+        # Image.fromarray(texture).save(save_path / f"step_{self.train_step:05d}_texture.png")
 
         if save_as_video:
             all_preds = np.stack(all_preds, axis=0)
@@ -241,7 +255,9 @@ class LatentPaintTrainer:
         radius = data['radius']
 
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
-        pred_rgb = outputs['image']
+        # pred_rgb = outputs['image']
+        # volume rendering, note that pred_rgb is latent, not the real rgb
+        pred_rgb = self.render_single_image(theta, phi, radius, resolution_level=4)    
 
         # text embeddings
         if self.cfg.guide.append_direction:
@@ -256,17 +272,46 @@ class LatentPaintTrainer:
 
         return pred_rgb, loss
 
+    def render_single_image(self, theta, phi, radius, resolution_level):
+        rays_o, rays_d = self.dataset.gen_random_ray_at_pose(theta, phi, radius, resolution_level=resolution_level)
+        H, W, _ = rays_o.shape
+        rays_o = rays_o.reshape(-1, 3).split(self.batch_size)
+        rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
+
+        out_latent_fine = []
+        for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
+            near, far = self.img_dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
+            # background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
+            background_latent = torch.ones([1, 4]) if self.use_white_bkgd else None
+
+            render_out_latent = self.renderer.render(rays_o_batch,
+                                              rays_d_batch,
+                                              near,
+                                              far,
+                                              cos_anneal_ratio=0.5, # skip cosine annealing
+                                              background_rgb=background_latent)
+
+            out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
+
+            del render_out_latent
+
+        # img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3]) * 256).clip(0, 255).astype(np.uint8)
+        img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
+        return img_fine
+    
     def eval_render(self, data):
         theta = data['theta']
         phi = data['phi']
         radius = data['radius']
-        dim = self.cfg.render.eval_grid_size
-        outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, decode_func=self.diffusion.decode_latents,
-                                         test=True ,dims=(dim,dim))
-        pred_rgb = outputs['image'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
+        # dim = self.cfg.render.eval_grid_size
+        # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, decode_func=self.diffusion.decode_latents,
+          #                                test=True ,dims=(dim,dim))
+        # pred_rgb = outputs['image'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
+        pred_rgb = self.render_single_image(theta, phi, radius, resolution_level=4)
+        # texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
 
-        return pred_rgb, texture_rgb
+        # we don't have texture, just return the pred_rgb
+        return pred_rgb, -1  #texture_rgb
 
     def log_train_renders(self, preds: torch.Tensor):
         if self.mesh_model.latent_mode:

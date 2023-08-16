@@ -214,6 +214,69 @@ class Dataset:
         rays_o = trans[None, None, :3].expand(rays_v.shape)  # W, H, 3
         return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
 
+    '''
+    Project
+    '''
+    def gen_random_ray_at_pose(self, theta, phi, radius, resolution_level=1):
+        l = resolution_level
+        tx = torch.linspace(0, self.W - 1, self.W // l)
+        ty = torch.linspace(0, self.H - 1, self.H // l)
+        pixels_x, pixels_y = torch.meshgrid(tx, ty)
+        p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1)  # W, H, 3
+        p = torch.matmul(self.intrinsics_all_inv[0, None, None, :3, :3], p[:, :, :, None]).squeeze()  # W, H, 3
+        rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
+        '''
+        trans = self.pose_all[idx_0, :3, 3] * (1.0 - ratio) + self.pose_all[idx_1, :3, 3] * ratio
+        pose_0 = self.pose_all[idx_0].detach().cpu().numpy()
+        pose_1 = self.pose_all[idx_1].detach().cpu().numpy()
+        pose_0 = np.linalg.inv(pose_0)
+        pose_1 = np.linalg.inv(pose_1)
+        rot_0 = pose_0[:3, :3]
+        rot_1 = pose_1[:3, :3]
+        rots = Rot.from_matrix(np.stack([rot_0, rot_1]))
+        key_times = [0, 1]
+        slerp = Slerp(key_times, rots)
+        rot = slerp(ratio)
+        pose = np.diag([1.0, 1.0, 1.0, 1.0])
+        pose = pose.astype(np.float32)
+        pose[:3, :3] = rot.as_matrix()
+        pose[:3, 3] = ((1.0 - ratio) * pose_0 + ratio * pose_1)[:3, 3]
+        pose = np.linalg.inv(pose)
+        rot = torch.from_numpy(pose[:3, :3]).cuda()
+        trans = torch.from_numpy(pose[:3, 3]).cuda()
+        
+        # Randomly generate pose(translate + rotation)
+        trans = torch.rand(3, 1)
+        rot_vec = torch.randn(3)
+        rot_vec = rot_vec / torch.norm(rot_vec) 
+        rot = Rot.from_rotvec(rot_vec).as_matrix()
+        '''
+
+        # Convert spherical coordinates to Cartesian coordinates
+        x = radius * torch.sin(theta) * torch.cos(phi)
+        y = radius * torch.sin(theta) * torch.sin(phi)
+        z = radius * torch.cos(theta)
+        trans = torch.tensor([x, y, z], dtype=torch.float32)
+
+        # Calculate camera's forward, right, and up vectors
+        # forward: (-x, -y, -z)
+        forward = -torch.tensor([x, y, z], dtype=torch.float32)
+        forward /= torch.norm(forward)
+        
+        # up: (0, 0, radius) - (x, y, z)
+        up = torch.cross(torch.tensor([-x, -y, radius-z], dtype=torch.float32), forward)
+        up /= torch.norm(up)
+        
+        right = torch.cross(forward, up)
+        right /= torch.norm(right)
+        
+        # Construct rotation matrix
+        rot = torch.stack((right, up, forward), dim=1)
+
+
+        rays_v = torch.matmul(rot[None, None, :3, :3], rays_v[:, :, :, None]).squeeze()  # W, H, 3
+        rays_o = trans[None, None, :3].expand(rays_v.shape)  # W, H, 3
+        return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
     # generate near and far from a ray
     def near_far_from_sphere(self, rays_o, rays_d):
         a = torch.sum(rays_d**2, dim=-1, keepdim=True)

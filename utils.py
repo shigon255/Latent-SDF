@@ -41,6 +41,10 @@ def tensor2numpy(tensor:torch.Tensor) -> np.ndarray:
     tensor = (tensor * 255).astype(np.uint8)
     return tensor
 
+def numpy2image(array:np.ndarray) -> np.ndarray:
+    array = (array * 255).astype(np.uint8)
+    return array
+
 def make_path(path: Path) -> Path:
     path.mkdir(exist_ok=True,parents=True)
     return path

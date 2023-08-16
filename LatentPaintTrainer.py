@@ -23,28 +23,28 @@ from models.dataset import Dataset # NeuS images dataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF
 from models.renderer import GeoNeuSRenderer, LatentPaintRenderer,  get_psnr
 from stable_diffusion import StableDiffusion
-from utils import make_path, tensor2numpy
+from utils import make_path, tensor2numpy, numpy2image
 
 '''
 Latent-Paint Trainer
 '''
 
 class LatentPaintTrainer:
-    def __init__(self, cfg: TrainConfig, args):
+    def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         self.train_step = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         # load neus config
-        self.neus_cfg_path = args.neus_cfg_path
-        self.case = args.case
+        self.neus_cfg_path = cfg.neus.neus_cfg_path
+        self.case = cfg.neus.case
 
         f = open(self.neus_cfg_path)
         neus_cfg_text = f.read()
-        neus_cfg_text = neus_cfg_text.replace('CASE_NAME', args.case)
+        neus_cfg_text = neus_cfg_text.replace('CASE_NAME', cfg.neus.case)
         f.close()
         self.neus_cfg = ConfigFactory.parse_string(neus_cfg_text)
-        self.neus_cfg['dataset.data_dir'] = self.neus_cfg['dataset.data_dir'].replace('CASE_NAME', args.case)
+        self.neus_cfg['dataset.data_dir'] = self.neus_cfg['dataset.data_dir'].replace('CASE_NAME', cfg.neus.case)
 
         utils.seed_everything(self.cfg.optim.seed)
 
@@ -61,11 +61,12 @@ class LatentPaintTrainer:
         # self.mesh_model = self.init_mesh_model()
         
         # networks
-        self.nerf_outside = NeRF(**self.conf['latent_model.nerf']).to(self.device)
-        self.color_network = RenderingNetwork(**self.conf['latent_model.rendering_network']).to(self.device)
-        self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
-        self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
+        self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).to(self.device)
+        self.color_network = RenderingNetwork(**self.neus_cfg['latent_model.rendering_network']).to(self.device)
+        self.deviation_network = SingleVarianceNetwork(**self.neus_cfg['model.variance_network']).to(self.device)
+        self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
 
+        self.sdf_network.eval()
         self.sdf_network.freeze() # freeze the sdf network
         params_to_train = []
         params_to_train += list(self.nerf_outside.parameters())
@@ -76,21 +77,21 @@ class LatentPaintTrainer:
                                                 self.sdf_network,
                                                 self.deviation_network,
                                                 self.color_network,
-                                                **self.conf['models.neus_renderer']
+                                                **self.neus_cfg['model.neus_renderer']
                                                 )
-        self.use_white_bkgd = args.use_white_bkgd
+        self.use_white_bkgd = cfg.neus.use_white_bkgd
 
         self.diffusion = self.init_diffusion()
         self.text_z = self.calc_text_embeddings()
-        self.optimizer = self.init_optimizer()
+        self.optimizer = self.init_optimizer(params_to_train)
         self.dataloaders = self.init_dataloaders() # random view dataset
-        self.img_dataset = Dataset(self.conf['dataset'])
+        self.img_dataset = Dataset(self.neus_cfg['dataset'])
 
         self.past_checkpoints = []
         if self.cfg.optim.resume:
             self.load_checkpoint(model_only=False)
-        if args.load_from_neus:
-            self.load_checkpoint_only_sdf(args.neus_ckpt_path)
+        if cfg.neus.load_from_neus:
+            self.load_checkpoint_only_sdf(cfg.neus.neus_ckpt_path)
         if self.cfg.optim.ckpt is not None:
             self.load_checkpoint(self.cfg.optim.ckpt, model_only=True)
 
@@ -119,7 +120,8 @@ class LatentPaintTrainer:
     def init_diffusion(self) -> StableDiffusion:
         diffusion_model = StableDiffusion(self.device, model_name=self.cfg.guide.diffusion_name,
                                           concept_name=self.cfg.guide.concept_name,
-                                          latent_mode=self.mesh_model.latent_mode)
+                                          latent_mode=True)
+                                          # latent_mode=self.mesh_model.latent_mode)
         for p in diffusion_model.parameters():
             p.requires_grad = False
         return diffusion_model
@@ -135,9 +137,9 @@ class LatentPaintTrainer:
                 text_z.append(self.diffusion.get_text_embeds([text]))
         return text_z
 
-    def init_optimizer(self) -> Optimizer:
+    def init_optimizer(self, params_to_train) -> Optimizer:
         # optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
-        optimizer = torch.optim.Adam(self.params_to_train, lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
+        optimizer = torch.optim.Adam(params_to_train, lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
         return optimizer
 
     def init_dataloaders(self) -> Dict[str, DataLoader]:
@@ -169,7 +171,8 @@ class LatentPaintTrainer:
                     bar_format='{desc}: {percentage:3.0f}% training step {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         while self.train_step < self.cfg.optim.iters:
             # Keep going over dataloader until finished the required number of iterations
-            for data in self.dataloaders['train']:
+            for i, data in enumerate(self.dataloaders['train']):
+                print("train index: ", i)
                 self.train_step += 1
                 pbar.update(1)
 
@@ -206,12 +209,13 @@ class LatentPaintTrainer:
         if save_as_video:
             all_preds = []
         for i, data in enumerate(dataloader):
+            print("evaluate index: ", i)
             preds, textures = self.eval_render(data)
-
-            # tensor 2 image, note that the color range will transform from [0, 1] to [0, 255]
-            # and the tensor will be detach()
+            
+            # transform [0, 1] to [0, 255]
+            print(preds.shape)
             pred = tensor2numpy(preds[0])
-
+            print(pred.shape)
             if save_as_video:
                 all_preds.append(pred)
             else:
@@ -273,10 +277,10 @@ class LatentPaintTrainer:
         return pred_rgb, loss
 
     def render_single_image(self, theta, phi, radius, resolution_level):
-        rays_o, rays_d = self.dataset.gen_random_ray_at_pose(theta, phi, radius, resolution_level=resolution_level)
+        rays_o, rays_d = self.img_dataset.gen_random_ray_at_pose(theta, phi, radius, resolution_level=resolution_level)
         H, W, _ = rays_o.shape
-        rays_o = rays_o.reshape(-1, 3).split(self.batch_size)
-        rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
+        rays_o = rays_o.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
+        rays_d = rays_d.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
 
         out_latent_fine = []
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
@@ -291,12 +295,12 @@ class LatentPaintTrainer:
                                               cos_anneal_ratio=0.5, # skip cosine annealing
                                               background_rgb=background_latent)
 
-            out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
+            # out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
+            out_latent_fine.append(render_out_latent['color_fine'])
 
             del render_out_latent
-
         # img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3]) * 256).clip(0, 255).astype(np.uint8)
-        img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
+        img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
         return img_fine
     
     def eval_render(self, data):

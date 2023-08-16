@@ -12,7 +12,7 @@ class RenderConfig:
     # Render height for training
     eval_grid_size: int = 512
     # training camera radius range
-    radius_range: Tuple[float, float] = (1.0, 1.5)
+    radius_range: Tuple[float, float] = (2.0, 2.5)# (1.0, 1.5)
     # Set [0,angle_overhead] as the overhead region
     angle_overhead: float = 30
     # Define the front angle region
@@ -57,6 +57,10 @@ class OptimConfig:
     # Load existing model
     ckpt: Optional[str] = None
 
+@dataclass
+class GlobalConfig:
+    gpu: str = 'cuda:0'
+    mode: str = 'latent_paint' # 'latent_paint' for latent paint, 'train' for training Geo-NeuS, 'validate_mesh' for validating mesh, same as 'validate_image', 'eval_image' or 'interpolate'
 
 @dataclass
 class LogConfig:
@@ -82,6 +86,19 @@ class LogConfig:
     def exp_dir(self) -> Path:
         return self.exp_root / self.exp_name
 
+@dataclass
+class NeusConfig:
+    """Parameters for NeuS"""
+    neus_cfg_path: str = './confs/womask.conf'
+    load_from_neus: bool = True # load SDF network from NeuS or not
+    neus_ckpt_path: str = ''
+    use_white_bkgd: bool = False
+    mcube_threshold: float = 0.0
+    is_continue: bool = False
+    checkpoint: int = 0
+    case: str = ''
+    suffix: str = ''
+    dilation: int = 15
 
 @dataclass
 class TrainConfig:
@@ -90,6 +107,8 @@ class TrainConfig:
     render: RenderConfig = field(default_factory=RenderConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     guide: GuideConfig = field(default_factory=GuideConfig)
+    neus: NeusConfig = field(default_factory=NeusConfig)
+    global_setting: GlobalConfig = field(default_factory=GlobalConfig)
 
     def __post_init__(self):
         if self.log.eval_only and (self.optim.ckpt is None and not self.optim.resume):

@@ -253,9 +253,9 @@ class Dataset:
         '''
 
         # Convert spherical coordinates to Cartesian coordinates
-        x = radius * torch.sin(theta) * torch.cos(phi)
-        y = radius * torch.sin(theta) * torch.sin(phi)
-        z = radius * torch.cos(theta)
+        x = radius * np.sin(theta) * np.cos(phi)
+        y = radius * np.sin(theta) * np.sin(phi)
+        z = radius * np.cos(theta)
         trans = torch.tensor([x, y, z], dtype=torch.float32)
 
         # Calculate camera's forward, right, and up vectors

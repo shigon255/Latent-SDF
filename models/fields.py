@@ -150,7 +150,6 @@ class SDFNetwork(nn.Module):
         '''
         Freeze the network during the painting phase
         '''
-        self.transformer = self.transformer.eval()
         for param in self.parameters():
             param.requires_grad = False
 

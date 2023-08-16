@@ -31,7 +31,8 @@ Note: this is not used in latent painting
 '''
 class GeoNeusTrainer:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False, checkpoint=False, suffix=''):
-        self.device = torch.device('cuda')
+        # self.device = torch.device(device)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         # Configuration
         self.conf_path = conf_path
@@ -81,6 +82,7 @@ class GeoNeusTrainer:
         
         params_to_train = []
         if  mode == 'latent_paint':
+            self.sdf_network.eval()
             self.sdf_network.freeze()
         else:
             params_to_train += list(self.sdf_network.parameters())
@@ -94,7 +96,7 @@ class GeoNeusTrainer:
                                                 self.sdf_network,
                                                 self.deviation_network,
                                                 self.color_network,
-                                                **self.conf['models.neus_renderer']
+                                                **self.conf['model.neus_renderer']
                                                 )
         else:
             self.renderer = GeoNeuSRenderer(self.nerf_outside,

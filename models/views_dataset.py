@@ -73,8 +73,8 @@ class ViewsDataset:
 
         return data
 
-    def dataloader(self):
-        loader = DataLoader(list(range(self.size)), batch_size=1, collate_fn=self.collate, shuffle=self.training,
+    def dataloader(self):                                                                                 # Note: this might cause some problem...
+        loader = DataLoader(list(range(self.size)), batch_size=1, collate_fn=self.collate, shuffle=False, # shuffle=self.training,
                             num_workers=0)
         loader._data = self  # an ugly fix... we need to access dataset in trainer.
         return loader

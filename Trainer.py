@@ -11,8 +11,8 @@ from confs.train_config import TrainConfig
 def main(cfg: TrainConfig):
     print('Hello Wooden')
 
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
     torch.cuda.set_device(cfg.global_setting.gpu)
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     if cfg.global_setting.mode == "latent_paint":
         trainer = LatentPaintTrainer(cfg)
         if cfg.log.eval_only:

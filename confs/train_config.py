@@ -8,7 +8,7 @@ from loguru import logger
 class RenderConfig:
     """ Parameters for the Mesh Renderer """
     # Render width for training
-    train_grid_size: int = 64
+    train_grid_size: int = 32 # 64
     # Render height for training
     eval_grid_size: int = 512
     # training camera radius range

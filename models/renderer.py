@@ -50,6 +50,7 @@ def extract_geometry(bound_min, bound_max, resolution, threshold, query_func):
 def sample_pdf(bins, weights, n_samples, det=False):
     # This implementation is from NeRF
     # Get pdf
+    # device = weights.device
     weights = weights + 1e-5  # prevent nans
     pdf = weights / torch.sum(weights, -1, keepdim=True)
     cdf = torch.cumsum(pdf, -1)
@@ -62,6 +63,7 @@ def sample_pdf(bins, weights, n_samples, det=False):
         u = torch.rand(list(cdf.shape[:-1]) + [n_samples])
 
     # Invert CDF
+    # u = u.to(device)
     u = u.contiguous()
     inds = torch.searchsorted(cdf, u, right=True)
     below = torch.max(torch.zeros_like(inds - 1), inds - 1)
@@ -588,7 +590,7 @@ class LatentPaintRenderer:
         Render background
         """
         batch_size, n_samples = z_vals.shape
-
+        # device = rays_o.device
         # Section length
         dists = z_vals[..., 1:] - z_vals[..., :-1]
         dists = torch.cat([dists, torch.Tensor([sample_dist]).expand(dists[..., :1].shape)], -1)
@@ -627,6 +629,7 @@ class LatentPaintRenderer:
         """
         Up sampling give a fixed inv_s
         """
+        # device = rays_o.device
         batch_size, n_samples = z_vals.shape
         pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]  # n_rays, n_samples, 3
         radius = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=False)
@@ -679,7 +682,7 @@ class LatentPaintRenderer:
         z_vals, index = torch.sort(z_vals, dim=-1)
 
         if not last:
-            new_sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, n_importance).detach() # detach: do not optimize the SDF network
+            new_sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, n_importance) # .detach() # detach: do not optimize the SDF network
             sdf = torch.cat([sdf, new_sdf], dim=-1)
             xx = torch.arange(batch_size)[:, None].expand(batch_size, n_samples + n_importance).reshape(-1)
             index = index.reshape(-1)
@@ -701,7 +704,7 @@ class LatentPaintRenderer:
                     cos_anneal_ratio=0.0,
                     intrinsics=None, intrinsics_inv=None, poses=None, images=None):
         batch_size, n_samples = z_vals.shape
-
+        # device = rays_o.device
         # Section length
         dists = z_vals[..., 1:] - z_vals[..., :-1]
         dists = torch.cat([dists, torch.Tensor([sample_dist]).expand(dists[..., :1].shape)], -1)
@@ -720,7 +723,7 @@ class LatentPaintRenderer:
 
         gradients = sdf_network.gradient(pts).squeeze()
         # sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
-        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latenet color
+        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)
@@ -913,7 +916,7 @@ class LatentPaintRenderer:
                 pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]
                 
 
-                sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, self.n_samples).detach()
+                sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, self.n_samples)
 
                 for i in range(self.up_sample_steps):
                     new_z_vals = self.up_sample(rays_o,
@@ -959,8 +962,6 @@ class LatentPaintRenderer:
         weights_sum = weights.sum(dim=-1, keepdim=True)
         gradients = ret_fine['gradients']
         s_val = ret_fine['s_val'].reshape(batch_size, n_samples).mean(dim=-1, keepdim=True)
-
-
         return {
             'color_fine': color_fine,
             's_val': s_val,

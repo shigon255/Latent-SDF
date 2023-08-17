@@ -44,4 +44,4 @@ render:
   radius_range:
   - 2.0
   - 2.5
-  train_grid_size: 64
+  train_grid_size: 32

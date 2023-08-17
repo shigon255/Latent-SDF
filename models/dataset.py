@@ -41,11 +41,14 @@ def load_K_Rt_from_P(filename, P=None):
 
     return intrinsics, pose
 
+# Note: this class is for Geo-NeuS
+# In latent paint, this class is not used
+
 class Dataset:
-    def __init__(self, conf):
+    def __init__(self, conf, device):
         super(Dataset, self).__init__()
         print('Load data: Begin')
-        self.device = torch.device('cuda')
+        self.device = device
         self.conf = conf
 
         self.data_dir = conf.get_string('data_dir')
@@ -53,7 +56,7 @@ class Dataset:
         self.object_cameras_name = conf.get_string('object_cameras_name')
 
         num_views = conf.get_string('n_views')
-        self.generator = torch.Generator(device='cuda')
+        self.generator = torch.Generator(device=device)
         self.generator.manual_seed(np.random.randint(1e9))
 
         self.camera_outside_sphere = conf.get_bool('camera_outside_sphere', default=True)
@@ -222,7 +225,10 @@ class Dataset:
         tx = torch.linspace(0, self.W - 1, self.W // l)
         ty = torch.linspace(0, self.H - 1, self.H // l)
         pixels_x, pixels_y = torch.meshgrid(tx, ty)
+        pixels_x = pixels_x.cuda()
+        pixels_y = pixels_y.cuda()
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1)  # W, H, 3
+        # p = p.to(self.device)        
         p = torch.matmul(self.intrinsics_all_inv[0, None, None, :3, :3], p[:, :, :, None]).squeeze()  # W, H, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
         '''
@@ -256,7 +262,7 @@ class Dataset:
         x = radius * np.sin(theta) * np.cos(phi)
         y = radius * np.sin(theta) * np.sin(phi)
         z = radius * np.cos(theta)
-        trans = torch.tensor([x, y, z], dtype=torch.float32)
+        trans = torch.tensor([x, y, z], dtype=torch.float32).to(self.device)
 
         # Calculate camera's forward, right, and up vectors
         # forward: (-x, -y, -z)
@@ -271,12 +277,13 @@ class Dataset:
         right /= torch.norm(right)
         
         # Construct rotation matrix
-        rot = torch.stack((right, up, forward), dim=1)
+        rot = torch.stack((right, up, forward), dim=1).to(self.device)
 
-
+        
         rays_v = torch.matmul(rot[None, None, :3, :3], rays_v[:, :, :, None]).squeeze()  # W, H, 3
         rays_o = trans[None, None, :3].expand(rays_v.shape)  # W, H, 3
         return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
+    
     # generate near and far from a ray
     def near_far_from_sphere(self, rays_o, rays_d):
         a = torch.sum(rays_d**2, dim=-1, keepdim=True)

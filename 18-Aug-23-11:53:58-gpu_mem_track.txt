@@ -1,0 +1,32 @@
+GPU Memory Track | 18-Aug-23-11:53:58 | Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 100: __init__ Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 188: train Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 198: train Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 352: train_render Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 285: render_single_image Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 298: render_single_image Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 318: render_single_image Total Tensor Used Memory:5909.3 Mb Total Allocated Memory:6475.7 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 321: render_single_image Total Tensor Used Memory:5906.0 Mb Total Allocated Memory:6474.0 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 327: render_single_image Total Tensor Used Memory:5906.0 Mb Total Allocated Memory:6474.0 Mb
+
+
+At /home/yi-ray/Latent-SDF/LatentPaintTrainer.py line 331: render_single_image Total Tensor Used Memory:4437.7 Mb Total Allocated Memory:4467.2 Mb
+

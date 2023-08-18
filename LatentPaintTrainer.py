@@ -88,7 +88,7 @@ class LatentPaintTrainer:
         self.optimizer = self.init_optimizer(params_to_train)
         self.dataloaders = self.init_dataloaders() # random view dataset
         # instead of load the whole Geo-NeuS dataset, only load the data we need(intrinsic)
-        # self.img_dataset = Dataset(self.neus_cfg['dataset'], torch.device('cuda:0'))
+        self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device)
         self.intrinsic_inv = read_intrinsic_inv(self.neus_cfg['dataset']).to(self.device)
         self.train_H = self.cfg.render.train_grid_size
         self.train_W = self.cfg.render.train_grid_size
@@ -283,18 +283,21 @@ class LatentPaintTrainer:
         # Note: rays_0, rays_d will be on cuda
         print("render single image")
         print(self.gpu_tracker.track())
-        rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level)
+        # rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level)
+        rays_o, rays_d = self.img_dataset.gen_rays_between(0, 1, 0.5, 64)
         # self.gpu_tracker.track()
         H, W, _ = rays_o.shape
+        print("shape: ", rays_o.shape)
         rays_o = rays_o.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
         rays_d = rays_d.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
 
         out_latent_fine = []
         for idx, (rays_o_batch, rays_d_batch) in enumerate(zip(rays_o, rays_d)):
             print("batch idx: ", idx)
+            print("before render")
             print(self.gpu_tracker.track())
-            rays_o_batch = rays_o_batch.to(self.device)
-            rays_d_batch = rays_d_batch.to(self.device)
+            # rays_o_batch = rays_o_batch.to(self.device)
+            # rays_d_batch = rays_d_batch.to(self.device)
             near, far = near_far_from_sphere(rays_o_batch, rays_d_batch)
             # background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
             background_latent = torch.ones([1, 4]) if self.use_white_bkgd else None
@@ -306,31 +309,52 @@ class LatentPaintTrainer:
                                               cos_anneal_ratio=0.5, # skip cosine annealing
                                               background_rgb=background_latent)
             # out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
-            if is_train:
-                out_latent_fine.append(render_out_latent['color_fine']) # do not detach
-            else:
-                out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
+            # if is_train:
+            #     out_latent_fine.append(render_out_latent['color_fine']) # do not detach
+            # else:
+            #     out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
+            out_latent_fine.append(render_out_latent['color_fine']) # do not detach
+            print("after render")
             print(self.gpu_tracker.track())
-            print("delete render_out_latent")
             del render_out_latent
+            print("after del render_out_latent")
             print(self.gpu_tracker.track())
         # img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3]) * 256).clip(0, 255).astype(np.uint8)
+        out_latent_fine = torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]) # latent image, do not multiply 256, since it'll be used to training
+        # print("---------------------")
+        # print(out_latent_fine.shape)
+        print("before del out_latent_fine")
+        print(self.gpu_tracker.track())
+        out_latent_fine = out_latent_fine.detach().cpu()
+        del out_latent_fine
+        print("after del out_latent_fine")
+        print(self.gpu_tracker.track())
+        raise NotImplementedError
         if is_train:
-            img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
+            # img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
+            out_latent_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
         else:
             img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
+        print("before del out_latent_fine")
+        print(self.gpu_tracker.track())
+        del out_latent_fine
+        print("after del out_latent_fine")
+        print(self.gpu_tracker.track())
         return img_fine
+        raise NotImplementedError
+        return out_latent_fine
     
     def train_render(self, data: Dict[str, Any]):
         theta = data['theta']
         phi = data['phi']
         radius = data['radius']
-        print("start train_render")
+        print("before render_single_image")
         print(self.gpu_tracker.track())
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
         # pred_rgb = outputs['image']
         # volume rendering, note that pred_rgb is latent, not the real rgb
         pred_rgb = self.render_single_image(theta, phi, radius, img_H=self.train_H, img_W=self.train_W, resolution_level=1, is_train=True)    
+        print("after render_single_image")
         print(self.gpu_tracker.track())
         # pred_rgbs: (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
         pred_rgb = pred_rgb.permute((2, 0, 1)).unsqueeze(0)
@@ -340,7 +364,11 @@ class LatentPaintTrainer:
             text_z = self.text_z[dirs]
         else:
             text_z = self.text_z
-
+        
+        del pred_rgb
+        print("after del pred_rgb")
+        print(self.gpu_tracker.track())
+        raise NotImplementedError
         # Guidance loss
         print(pred_rgb.shape)
         print(self.gpu_tracker.track())

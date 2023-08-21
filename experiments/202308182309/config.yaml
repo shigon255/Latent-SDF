@@ -1,0 +1,47 @@
+global_setting:
+  gpu: cuda:1
+  mode: latent_paint
+guide:
+  append_direction: true
+  concept_name: null
+  diffusion_name: CompVis/stable-diffusion-v1-4
+  dy: 0.25
+  shape_path: /home/yi-ray/latent-nerf/shapes/animal.obj
+  shape_scale: 0.6
+  text: A scissor
+  texture_interpolation_mode: nearest
+log:
+  eval_only: false
+  eval_size: 10
+  exp_name: '202308182309'
+  exp_root: experiments
+  full_eval_size: 100
+  max_keep_ckpts: 2
+  save_interval: 100
+  save_mesh: true
+neus:
+  case: scan37
+  checkpoint: 0
+  dilation: 15
+  is_continue: false
+  load_from_neus: true
+  mcube_threshold: 0.0
+  neus_cfg_path: confs/womask.conf
+  neus_ckpt_path: neus_ckpt/ckpt_300000.pth
+  suffix: ''
+  use_white_bkgd: false
+optim:
+  ckpt: null
+  iters: 1000
+  lr: 0.01
+  resume: false
+  seed: 0
+render:
+  angle_front: 70
+  angle_overhead: 30
+  backbone: texture-mesh
+  eval_grid_size: 512
+  radius_range:
+  - 2.0
+  - 2.5
+  train_grid_size: 32

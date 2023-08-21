@@ -10,9 +10,9 @@ class RenderConfig:
     # Render width for training
     train_grid_size: int = 32 # 64
     # Render height for training
-    eval_grid_size: int = 512
+    eval_grid_size: int = 32 # 512
     # training camera radius range
-    radius_range: Tuple[float, float] = (2.0, 2.5)# (1.0, 1.5)
+    radius_range: Tuple[float, float] = (20.0, 20.5)# (1.0, 1.5)
     # Set [0,angle_overhead] as the overhead region
     angle_overhead: float = 30
     # Define the front angle region
@@ -49,7 +49,7 @@ class OptimConfig:
     # Seed for experiment
     seed: int = 0
     # Total iters
-    iters: int = 5000
+    iters: int = 1000# 5000
     # Learning rate
     lr: float = 1e-2
     # Resume from checkpoint
@@ -92,7 +92,7 @@ class NeusConfig:
     neus_cfg_path: str = './confs/womask.conf'
     load_from_neus: bool = True # load SDF network from NeuS or not
     neus_ckpt_path: str = ''
-    use_white_bkgd: bool = False
+    use_white_bkgd: bool = True
     mcube_threshold: float = 0.0
     is_continue: bool = False
     checkpoint: int = 0

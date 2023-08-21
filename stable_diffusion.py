@@ -106,7 +106,6 @@ class StableDiffusion(nn.Module):
     def train_step(self, text_embeddings, inputs, guidance_scale=100, gpu_tracker=None):
         
         # interp to 512x512 to be fed into vae.
-        # gpu_tracker.track()
         # _t = time.time()
         if not self.latent_mode:
         # latents = F.interpolate(latents, (64, 64), mode='bilinear', align_corners=False)
@@ -115,7 +114,6 @@ class StableDiffusion(nn.Module):
         else:
             latents = inputs
         # torch.cuda.synchronize(); print(f'[TIME] guiding: interp {time.time() - _t:.4f}s')
-        # gpu_tracker.track()
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
 
@@ -126,7 +124,6 @@ class StableDiffusion(nn.Module):
 
         # predict the noise residual with unet, NO grad!
         # _t = time.time()
-        # gpu_tracker.track()
         with torch.no_grad():
             # add noise
             noise = torch.randn_like(latents)
@@ -135,7 +132,6 @@ class StableDiffusion(nn.Module):
             latent_model_input = torch.cat([latents_noisy] * 2)
             noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
         # torch.cuda.synchronize(); print(f'[TIME] guiding: unet {time.time() - _t:.4f}s')
-        # gpu_tracker.track()
         # perform guidance (high scale from paper!)
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -150,10 +146,9 @@ class StableDiffusion(nn.Module):
 
         # manually backward, since we omitted an item in grad and cannot simply autodiff.
         # _t = time.time()
-        # gpu_tracker.track()
         latents.backward(gradient=grad, retain_graph=True)
         # torch.cuda.synchronize(); print(f'[TIME] guiding: backward {time.time() - _t:.4f}s')
-
+        
         return 0 # dummy loss value
 
     def produce_latents(self, text_embeddings, height=512, width=512, num_inference_steps=50, guidance_scale=7.5, latents=None):

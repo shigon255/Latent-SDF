@@ -1,0 +1,7 @@
+2023-08-18 23:09:35 try to load hugging face access token from the default place, make sure you have run `huggingface-cli login`.
+2023-08-18 23:09:35 loading stable diffusion with CompVis/stable-diffusion-v1-4...
+2023-08-18 23:09:37 	 successfully loaded stable diffusion!
+2023-08-18 23:09:43 End
+2023-08-18 23:09:43 Successfully initialized 202308182309
+2023-08-18 23:09:43 Starting training ^_^
+2023-08-18 23:22:07 Evaluating and saving model, iteration #100...

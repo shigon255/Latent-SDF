@@ -32,7 +32,7 @@ neus:
   use_white_bkgd: false
 optim:
   ckpt: null
-  iters: 5000
+  iters: 1000
   lr: 0.01
   resume: false
   seed: 0
@@ -40,7 +40,7 @@ render:
   angle_front: 70
   angle_overhead: 30
   backbone: texture-mesh
-  eval_grid_size: 512
+  eval_grid_size: 32
   radius_range:
   - 2.0
   - 2.5

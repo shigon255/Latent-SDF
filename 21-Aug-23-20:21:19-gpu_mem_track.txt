@@ -1,0 +1,5 @@
+GPU Memory Track | 21-Aug-23-20:21:19 | Total Tensor Used Memory:4078.5 Mb Total Allocated Memory:4107.9 Mb
+
+
+At /home/yi-ray/Latent-SDF_gold/LatentPaintTrainer.py line 101: __init__ Total Tensor Used Memory:4078.5 Mb Total Allocated Memory:4107.9 Mb
+

@@ -17,6 +17,7 @@ from tqdm import tqdm
 from pyhocon import ConfigFactory
 from gpu_mem_track import MemTracker
 import inspect
+import trimesh
 
 import utils
 from confs.train_config import TrainConfig
@@ -89,16 +90,16 @@ class LatentPaintTrainer:
         self.optimizer = self.init_optimizer(params_to_train)
         self.dataloaders = self.init_dataloaders() # random view dataset
         # instead of load the whole Geo-NeuS dataset, only load the data we need(intrinsic)
-        # self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device)
+        self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device)
         self.intrinsic_inv = read_intrinsic_inv(self.neus_cfg['dataset']).to(self.device)
         self.train_H = self.cfg.render.train_grid_size
         self.train_W = self.cfg.render.train_grid_size
         self.eval_H = self.cfg.render.eval_grid_size
         self.eval_W = self.cfg.render.eval_grid_size
 
-        frame = inspect.currentframe()     
-        self.gpu_tracker = MemTracker(frame) 
-        self.gpu_tracker.track()
+        # frame = inspect.currentframe()     
+        # self.gpu_tracker = MemTracker(frame) 
+        # self.gpu_tracker.track()
 
         self.past_checkpoints = []
         if self.cfg.optim.resume:
@@ -207,6 +208,7 @@ class LatentPaintTrainer:
                     # Randomly log rendered images throughout the training                
                     self.log_train_renders(pred_latents)
 
+        
         logger.info('Finished Training ^_^')
         logger.info('Evaluating the last model...')
         self.full_eval()
@@ -226,8 +228,9 @@ class LatentPaintTrainer:
 
             # encode latent into rgb
             pred_latents = pred_latents.permute(2, 0, 1).unsqueeze(0) # (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
+            
             pred_rgb = self.diffusion.decode_latents(pred_latents).permute(0, 2, 3, 1).contiguous() # -> (1, train_grid_size, train_grid_size, 3)
-
+            
             pred_rgb = tensor2numpy(pred_rgb[0])
 
             if save_as_video:
@@ -235,6 +238,8 @@ class LatentPaintTrainer:
             else:
                 Image.fromarray(pred_rgb).save(save_path / f"step_{self.train_step:05d}_{i:04d}_rgb.png")
 
+        # also store mesh
+        # self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold)
         '''
         Project
         No texture can be shown/saved
@@ -250,6 +255,7 @@ class LatentPaintTrainer:
                                                            quality=8, macro_block_size=1)
 
             dump_vid(all_preds, 'rgb')
+        
         logger.info('Done!')
 
     def full_eval(self):
@@ -268,9 +274,11 @@ class LatentPaintTrainer:
         '''
 
     def render_single_image(self, theta, phi, radius, img_H, img_W, resolution_level, is_train):
-        rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level)
-        # rays_o, rays_d = self.img_dataset.gen_rays_between(0, 1, 0.5, 64)
-        # CAUTION: DIFFERENCE with TCM
+        if self.cfg.optim.use_neus_view:
+            rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(np.random.randint(self.img_dataset.n_images), H=img_H, W=img_W, resolution_level=resolution_level)
+        else:
+            rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level)
+        
         H, W, _ = rays_o.shape
         
         rays_o = rays_o.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
@@ -311,6 +319,7 @@ class LatentPaintTrainer:
         # else:
           #   img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
         img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
+
         return img_fine
     
     def train_render(self, data: Dict[str, Any]):
@@ -331,7 +340,7 @@ class LatentPaintTrainer:
         else:
             text_z = self.text_z
         
-        loss_guidance = self.diffusion.train_step(text_z, pred_latents, gpu_tracker=self.gpu_tracker)
+        loss_guidance = self.diffusion.train_step(text_z, pred_latents)
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
 
         return pred_latents, loss
@@ -366,11 +375,69 @@ class LatentPaintTrainer:
 
         Image.fromarray(pred_rgb).save(save_path)
 
+    # TODO: figure out how to find the color of vertices
+    def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None):
+        print('Start exporting textured mesh')
+
+        bound_min = torch.tensor(self.img_dataset.object_bbox_min, dtype=torch.float32)
+        bound_max = torch.tensor(self.img_dataset.object_bbox_max, dtype=torch.float32)
+        vertices, triangles = self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution,
+                                                               threshold=threshold)
+        print(f'Vertices count: {vertices.shape[0]}')
+
+        vertices = torch.tensor(vertices, dtype=torch.float32)
+        vertices_batch = vertices.split(self.neus_cfg['train.batch_size'])
+        render_iter = len(vertices_batch)
+
+        vertex_colors = []
+        for iter in tqdm(range(render_iter)):
+            feature_vector = self.sdf_network.sdf_hidden_appearance(vertices_batch[iter])[:, 1:]
+            gradients = self.sdf_network.gradient(vertices_batch[iter]).squeeze()
+            dirs = -gradients
+            # vertex color: (self.neus_cfg['train.batch_size'], 4)
+            vertex_color = self.color_network(vertices_batch[iter], gradients, dirs,
+                                                feature_vector).reshape(self.neus_cfg['train.batch_size'], 4)  # BGR to RGB
+            print(vertex_color.shape)
+            vertex_color = vertex_color.view(self.neus_cfg['train.batch_size'] // 2, 2, 4).permute(2, 0, 1).unsqueeze(0)
+            print(vertex_color.shape)
+            vertex_color = self.diffusion.decode_latents(vertex_color).permute(0, 2, 3, 1).contiguous() # -> (1, self.neus_cfg['train.batch_size'] // 2, 2, 3)
+            print(vertex_color.shape)
+            vertex_color = vertex_color.squeeze(0).view(1, self.neus_cfg['train.batch_size'], 3) # -> (self.neus_cfg['train.batch_size'], 3)
+            print(vertex_color.shape)
+            vertex_color = vertex_color.detach().cpu().numpy()
+            vertex_colors.append(vertex_color)
+        vertex_colors = np.concatenate(vertex_colors)
+        print(f'validate point count: {vertex_colors.shape[0]}')
+        vertices = vertices.detach().cpu().numpy()
+
+        if world_space:
+            vertices = vertices * self.img_dataset.scale_mats_np[0][0, 0] + self.img_dataset.scale_mats_np[0][:3, 3][None]
+
+        os.makedirs(os.path.join(self.exp_path, 'meshes'), exist_ok=True)
+        mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=vertex_colors)
+        if name is not None:
+            mesh.export(os.path.join(self.exp_path, 'meshes', f'{name}.ply'))
+        else:
+            mesh.export(os.path.join(self.exp_path, 'meshes', '{:0>8d}_vertex_color.ply'.format(self.train_step)))
+
+        logger.info('End')
+
     def load_checkpoint_only_sdf(self, ckpt_path):
         # For load SDF work from pretrained Geo-NeuS model
         # NeRF, variance, and radiance network should not be loaded
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+
+        logger.info('End')
+
+    def load_checkpoint_from_neus(self, ckpt_path):
+        # For load SDF, radiance, NeRF, variance network from pretrained Geo-NeuS model
+        # NeRF, variance, and radiance network should not be loaded
+        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+        self.color_network.load_state_dict(checkpoint['color_network_fine'])
+        self.nerf_outside.load_state_dict(checkpoint['nerf'])
+        self.deviation_network.load_state_dict(checkpoint['variance_network_fine'])
 
         logger.info('End')
 

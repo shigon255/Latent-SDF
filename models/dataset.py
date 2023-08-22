@@ -129,7 +129,7 @@ class Dataset:
 
         print('Load data: End')
 
-    def gen_rays_at(self, img_idx, resolution_level=1):
+    def gen_rays_at(self, img_idx, H, W, resolution_level=1):
         """
         Generate rays at world space from one camera.
         """
@@ -145,8 +145,10 @@ class Dataset:
         images_gray_pair = self.images_gray[idx_list]
 
         l = resolution_level
-        tx = torch.linspace(0, self.W - 1, self.W // l)
-        ty = torch.linspace(0, self.H - 1, self.H // l)
+        # tx = torch.linspace(0, self.W - 1, self.W // l)
+        # ty = torch.linspace(0, self.H - 1, self.H // l)
+        tx = torch.linspace(0, W - 1, W // l)
+        ty = torch.linspace(0, H - 1, H // l)
         pixels_x, pixels_y = torch.meshgrid(tx, ty)
 
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1) # W, H, 3

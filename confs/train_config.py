@@ -26,7 +26,7 @@ class GuideConfig:
     # Guiding text prompt
     text: str
     # The mesh to paint
-    shape_path: str
+    shape_path: str = '~/latent-nerf/shapes/animal.obj'
     # Append direction to text prompts
     append_direction: bool = True
     # A Textual-Inversion concept to use
@@ -56,6 +56,8 @@ class OptimConfig:
     resume: bool = False
     # Load existing model
     ckpt: Optional[str] = None
+    # Use random view or random image view in dataset
+    use_neus_view: bool = True
 
 @dataclass
 class GlobalConfig:
@@ -81,6 +83,8 @@ class LogConfig:
     save_mesh: bool = True
     # Number of past checkpoints to keep
     max_keep_ckpts: int = 2
+    # marching cube threshold
+    mcube_threshold: float = 0.0
 
     @property
     def exp_dir(self) -> Path:
@@ -91,12 +95,12 @@ class NeusConfig:
     """Parameters for NeuS"""
     neus_cfg_path: str = './confs/womask.conf'
     load_from_neus: bool = True # load SDF network from NeuS or not
-    neus_ckpt_path: str = ''
+    neus_ckpt_path: str = 'neus_ckpt/ckpt_300000.pth'
     use_white_bkgd: bool = True
     mcube_threshold: float = 0.0
     is_continue: bool = False
     checkpoint: int = 0
-    case: str = ''
+    case: str = 'scan37'
     suffix: str = ''
     dilation: int = 15
 

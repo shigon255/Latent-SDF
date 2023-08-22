@@ -977,18 +977,18 @@ class LatentPaintRenderer:
             # 'mid_inside_sphere': ret_fine['mid_inside_sphere']
         }
 
-    '''
-    Project 
-    No need of these functions
-    '''
-    '''
+
     def extract_geometry(self, bound_min, bound_max, resolution, threshold=0.0):
         return extract_geometry(bound_min,
                                 bound_max,
                                 resolution=resolution,
                                 threshold=threshold,
                                 query_func=lambda pts: -self.sdf_network.sdf(pts))
-
+    '''
+    Project 
+    No need of these functions
+    '''
+    '''
     def patch_homography(self, H, uv):
         # H: [batch_size, nsrc, 3, 3]
         # uv: [batch_size, 121, 2]

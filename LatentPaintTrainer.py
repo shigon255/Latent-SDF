@@ -38,6 +38,7 @@ class LatentPaintTrainer:
         self.cfg = cfg
         self.train_step = 0
         self.device = torch.device(cfg.global_setting.gpu)
+        self.half = cfg.global_setting.half
 
         # load neus config
         self.neus_cfg_path = cfg.neus.neus_cfg_path
@@ -65,10 +66,16 @@ class LatentPaintTrainer:
         # self.mesh_model = self.init_mesh_model()
         
         # networks
-        self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).to(self.device)
-        self.color_network = RenderingNetwork(**self.neus_cfg['latent_model.rendering_network']).to(self.device)
-        self.deviation_network = SingleVarianceNetwork(**self.neus_cfg['model.variance_network']).to(self.device)
-        self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
+        if self.half:
+            self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).half().to(self.device)
+            self.color_network = RenderingNetwork(**self.neus_cfg['latent_model.rendering_network']).half().to(self.device)
+            self.deviation_network = SingleVarianceNetwork(**self.neus_cfg['model.variance_network']).half().to(self.device)
+            self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).half().to(self.device)
+        else:
+            self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).to(self.device)
+            self.color_network = RenderingNetwork(**self.neus_cfg['latent_model.rendering_network']).to(self.device)
+            self.deviation_network = SingleVarianceNetwork(**self.neus_cfg['model.variance_network']).to(self.device)
+            self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
 
         self.sdf_network.eval()
         self.sdf_network.freeze() # freeze the sdf network
@@ -90,8 +97,8 @@ class LatentPaintTrainer:
         self.optimizer = self.init_optimizer(params_to_train)
         self.dataloaders = self.init_dataloaders() # random view dataset
         # instead of load the whole Geo-NeuS dataset, only load the data we need(intrinsic)
-        self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device)
-        self.intrinsic_inv = read_intrinsic_inv(self.neus_cfg['dataset']).to(self.device)
+        self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device, half=self.half)
+        self.intrinsic_inv = read_intrinsic_inv(self.neus_cfg['dataset']).to(torch.float16).to(self.device)
         self.train_H = self.cfg.render.train_grid_size
         self.train_W = self.cfg.render.train_grid_size
         self.eval_H = self.cfg.render.eval_grid_size
@@ -134,7 +141,7 @@ class LatentPaintTrainer:
     def init_diffusion(self) -> StableDiffusion:
         diffusion_model = StableDiffusion(self.device, model_name=self.cfg.guide.diffusion_name,
                                           concept_name=self.cfg.guide.concept_name,
-                                          latent_mode=True)
+                                          latent_mode=True, half=self.half)
                                           # latent_mode=self.mesh_model.latent_mode)
         for p in diffusion_model.parameters():
             p.requires_grad = False
@@ -305,7 +312,10 @@ class LatentPaintTrainer:
             # else:
               #   out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
             
-            out_latent_fine.append(render_out_latent['color_fine'])
+            if self.half:
+                out_latent_fine.append(render_out_latent['color_fine'].half())
+            else:
+                out_latent_fine.append(render_out_latent['color_fine'])
             del render_out_latent
             '''
             if only del render_out_latent here,
@@ -319,7 +329,6 @@ class LatentPaintTrainer:
         # else:
           #   img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
         img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
-
         return img_fine
     
     def train_render(self, data: Dict[str, Any]):
@@ -330,7 +339,6 @@ class LatentPaintTrainer:
         # pred_rgb = outputs['image']
         # volume rendering, note that pred_latents is latent, not the real rgb
         pred_latents = self.render_single_image(theta, phi, radius, img_H=self.train_H, img_W=self.train_W, resolution_level=1, is_train=True)    
-
         # pred_latents: (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
         pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
         # text embeddings

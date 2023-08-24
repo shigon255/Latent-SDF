@@ -45,7 +45,7 @@ def load_K_Rt_from_P(filename, P=None):
 # In latent paint, this class is not used
 
 class Dataset:
-    def __init__(self, conf, device):
+    def __init__(self, conf, device, half):
         super(Dataset, self).__init__()
         print('Load data: Begin')
         self.device = device
@@ -99,6 +99,16 @@ class Dataset:
         self.pose_all = torch.stack(self.pose_all).to(self.device)  # [n_images, 4, 4]
         self.H, self.W = self.images.shape[1], self.images.shape[2]
         self.image_pixels = self.H * self.W
+
+        if half:
+            self.images = self.images.to(dtype=torch.float16)
+            self.images_gray = self.images_gray.to(dtype=torch.float16)
+            self.masks = self.masks.to(dtype=torch.float16)
+            self.intrinsics_all = self.intrinsics_all.to(dtype=torch.float16)
+            self.intrinsics_all_inv = self.intrinsics_all_inv.to(dtype=torch.float16)
+            self.focal = self.focal.to(dtype=torch.float16)
+            self.pose_all = self.pose_all.to(dtype=torch.float16)
+        
 
         pts_dir = os.path.join(self.data_dir, 'sfm_pts/points.npy')
         view_id_dir = os.path.join(self.data_dir, 'sfm_pts/view_id.npy')

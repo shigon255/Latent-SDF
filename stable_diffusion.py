@@ -14,7 +14,7 @@ from loguru import logger
 import time
 
 class StableDiffusion(nn.Module):
-    def __init__(self, device, model_name='CompVis/stable-diffusion-v1-4',concept_name=None, latent_mode=True):
+    def __init__(self, device, model_name='CompVis/stable-diffusion-v1-4',concept_name=None, latent_mode=True, half=True):
         super().__init__()
 
         try:
@@ -34,21 +34,37 @@ class StableDiffusion(nn.Module):
         logger.info(f'loading stable diffusion with {model_name}...')
                 
         # 1. Load the autoencoder model which will be used to decode the latents into image space. 
-        self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
+        # self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
+        if half:
+            self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).half().to(self.device)
+        else:
+            self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
 
         # 2. Load the tokenizer and text encoder to tokenize and encode the text. 
         self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+        # self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+        if half:
+            self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").half().to(self.device)
+        else:
+            self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
         self.image_encoder = None
         self.image_processor = None
 
 
         # 3. The UNet model for generating the latents.
-        self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(self.device)
+        # self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(self.device)
+        if half:
+            self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).half().to(self.device)
+        else:
+            self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(self.device)
 
         # 4. Create a scheduler for inference
         self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=self.num_train_timesteps)
-        self.alphas = self.scheduler.alphas_cumprod.to(self.device) # for convenience
+        # self.alphas = self.scheduler.alphas_cumprod.to(self.device) # for convenience
+        if half:
+            self.alphas = self.scheduler.alphas_cumprod.half().to(self.device) # for convenience
+        else:
+            self.alphas = self.scheduler.alphas_cumprod.to(self.device) # for convenience
 
         if concept_name is not None:
             self.load_concept(concept_name)

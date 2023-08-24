@@ -716,7 +716,6 @@ class LatentPaintRenderer:
 
         pts = pts.reshape(-1, 3)
         dirs = dirs.reshape(-1, 3)
-
         sdf_nn_output = sdf_network(pts)
         sdf = sdf_nn_output[:, :1]
         feature_vector = sdf_nn_output[:, 1:]

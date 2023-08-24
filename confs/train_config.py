@@ -8,9 +8,9 @@ from loguru import logger
 class RenderConfig:
     """ Parameters for the Mesh Renderer """
     # Render width for training
-    train_grid_size: int = 32 # 64
+    train_grid_size: int = 64 # 64
     # Render height for training
-    eval_grid_size: int = 32 # 512
+    eval_grid_size: int = 64 # 512
     # training camera radius range
     radius_range: Tuple[float, float] = (20.0, 20.5)# (1.0, 1.5)
     # Set [0,angle_overhead] as the overhead region
@@ -62,6 +62,7 @@ class OptimConfig:
 @dataclass
 class GlobalConfig:
     gpu: str = 'cuda:0'
+    half: bool = True
     mode: str = 'latent_paint' # 'latent_paint' for latent paint, 'train' for training Geo-NeuS, 'validate_mesh' for validating mesh, same as 'validate_image', 'eval_image' or 'interpolate'
 
 @dataclass

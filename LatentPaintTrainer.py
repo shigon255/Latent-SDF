@@ -4,6 +4,7 @@ from typing import Any, Dict, Union, List
 
 import imageio
 import os
+import cv2 as cv
 import numpy as np
 import pyrallis
 import torch
@@ -80,7 +81,7 @@ class LatentPaintTrainer:
             self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
 
         self.sdf_network.eval()
-        self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
+        # self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
         params_to_train = []
         params_to_train += list(self.nerf_outside.parameters())
         params_to_train += list(self.deviation_network.parameters())
@@ -97,7 +98,7 @@ class LatentPaintTrainer:
         self.diffusion = self.init_diffusion()
         self.text_z = self.calc_text_embeddings()
         self.optimizer = self.init_optimizer(params_to_train)
-        self.dataloaders = self.init_dataloaders() # random view dataset
+        # self.dataloaders = self.init_dataloaders() # random view dataset
         # instead of load the whole Geo-NeuS dataset, only load the data we need(intrinsic)
         self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device, half=self.half)
         self.intrinsic_inv = read_intrinsic_inv(self.neus_cfg['dataset']).to(torch.float16).to(self.device)
@@ -105,6 +106,9 @@ class LatentPaintTrainer:
         self.train_W = self.cfg.render.train_grid_W
         self.eval_H = self.cfg.render.eval_grid_H
         self.eval_W = self.cfg.render.eval_grid_W
+
+        self.eval_size = 1 # randomly evaluate 1 image
+        self.full_eval_size = self.img_dataset.n_images # evaluate all images
 
         # frame = inspect.currentframe()     
         # self.gpu_tracker = MemTracker(frame) 
@@ -185,7 +189,8 @@ class LatentPaintTrainer:
         logger.info('Starting training ^_^')
         
         # Evaluate the initialization
-        self.evaluate(self.dataloaders['val'], self.eval_renders_path)
+        # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
+        self.evaluate(self.eval_renders_path)
         # self.mesh_model.train()
         self.nerf_outside.train()
         self.deviation_network.train()
@@ -195,25 +200,27 @@ class LatentPaintTrainer:
                     bar_format='{desc}: {percentage:3.0f}% training step {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         while self.train_step < self.cfg.optim.iters:
             # Keep going over dataloader until finished the required number of iterations
-            for i, data in enumerate(self.dataloaders['train']):
-                
+            # for i, data in enumerate(self.dataloaders['train']):
+            for i in range(self.img_dataset.n_images):
                 self.train_step += 1
                 pbar.update(1)
 
                 self.optimizer.zero_grad()
                 # pred_latents: (1, 4, 64, 64)
-                pred_latents, loss = self.train_render(data)
+                pred_rgb, loss = self.train_render(i) # render ith image
                 self.optimizer.step()
 
-                if np.random.uniform(0, 1) < 0.05:
+                # if np.random.uniform(0, 1) < 0.05:
+                if np.random.uniform(0, 1) < 1.0:
                     # Randomly log rendered images throughout the training                
-                    self.log_train_renders(pred_latents)
+                    self.log_train_renders(pred_rgb, i)
                 
-                del pred_latents
+                del pred_rgb
 
                 if self.train_step % self.cfg.log.save_interval == 0:
                     self.save_checkpoint(full=True)
-                    self.evaluate(self.dataloaders['val'], self.eval_renders_path)
+                    # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
+                    self.evaluate(self.eval_renders_path)
                     # self.mesh_model.train()
                     self.nerf_outside.train()
                     self.deviation_network.train()
@@ -232,31 +239,40 @@ class LatentPaintTrainer:
         else:
             return np.min([1.0, self.train_step / self.anneal_end])
 
-    def evaluate(self, dataloader: DataLoader, save_path: Path, save_as_video: bool = False):
+    def evaluate(self, save_path: Path, full_eval: bool = False):
         logger.info(f'Evaluating and saving model, iteration #{self.train_step}...')
         # self.mesh_model.eval()
         self.nerf_outside.eval()
         self.deviation_network.eval()
         self.color_network.eval()
         save_path.mkdir(exist_ok=True)
-        if save_as_video:
+
+        eval_size = self.eval_size
+        if full_eval:
+            logger.info("Start full evaluation")
             all_preds = []
-        for i, data in enumerate(dataloader):
-            pred_latents, textures = self.eval_render(data) # note that textures contain dummy value
+            eval_size = self.full_eval_size
+        else:
+            logger.info("Start normal evaluation")
+        for i in range(eval_size):
+            if not full_eval:
+                img_idx = np.random.randint(self.img_dataset.n_images)
+            else:
+                img_idx = i
+            pred_rgb, textures = self.eval_render(img_idx=img_idx) # note that textures contain dummy value
 
             # encode latent into rgb
             # pred_latents = pred_latents.permute(2, 0, 1).unsqueeze(0) # (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
             
             # pred_rgb = self.diffusion.decode_latents(pred_latents).permute(0, 2, 3, 1).contiguous() # -> (1, train_grid_size, train_grid_size, 3)
-            pred_rgb = pred_latents
             # pred_rgb = tensor2numpy(pred_rgb[0])
             # pred_rgb = tensor2numpy(pred_rgb)
             pred_rgb = numpy2image(pred_rgb)
 
-            if save_as_video:
+            if full_eval:
                 all_preds.append(pred_rgb)
             else:
-                Image.fromarray(pred_rgb).save(save_path / f"step_{self.train_step:05d}_{i:04d}_rgb.png")
+                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_rgb)
 
         # also store mesh
         # self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold)
@@ -268,7 +284,7 @@ class LatentPaintTrainer:
         # texture = tensor2numpy(textures[0])
         # Image.fromarray(texture).save(save_path / f"step_{self.train_step:05d}_texture.png")
 
-        if save_as_video:
+        if full_eval:
             all_preds = np.stack(all_preds, axis=0)
 
             dump_vid = lambda video, name: imageio.mimsave(save_path / f"step_{self.train_step:05d}_{name}.mp4", video, fps=25,
@@ -280,7 +296,8 @@ class LatentPaintTrainer:
 
     def full_eval(self):
         try:
-            self.evaluate(self.dataloaders['val_large'], self.final_renders_path, save_as_video=True)
+            # self.evaluate(self.dataloaders['val_large'], self.final_renders_path, save_as_video=True)
+            self.evaluate(self.final_renders_path, full_eval=True)
         except:
             logger.error('failed to save result video')
         '''
@@ -293,11 +310,13 @@ class LatentPaintTrainer:
             logger.info(f"\tDone!")
         '''
 
-    def render_single_image(self, theta, phi, radius, img_H, img_W, resolution_level, is_train):
-        if self.cfg.optim.use_neus_view:
-            rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(np.random.randint(self.img_dataset.n_images), H=img_H, W=img_W, resolution_level=resolution_level)
-        else:
-            rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level, half=self.half)
+    def render_single_image(self, img_H, img_W, resolution_level, is_train, img_idx):
+        # if self.cfg.optim.use_neus_view:
+          #   rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(img_idx, H=img_H, W=img_W, resolution_level=resolution_level)
+        # else:
+          #   rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level, half=self.half)
+        # abandon using view dataset
+        rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(img_idx, H=img_H, W=img_W, resolution_level=resolution_level)
         
         H, W, _ = rays_o.shape
         
@@ -311,7 +330,7 @@ class LatentPaintTrainer:
             near, far = near_far_from_sphere(rays_o_batch, rays_d_batch)
             
             # background_latent = torch.ones([1, 4]) if self.use_white_bkgd else None
-            background_latent = torch.ones([1, 3]) if self.use_white_bkgd else None
+            background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
 
             # memory added from here
             render_out = self.renderer.render(rays_o_batch,
@@ -319,18 +338,26 @@ class LatentPaintTrainer:
                                               near,
                                               far,
                                               cos_anneal_ratio=self.get_cos_anneal_ratio(), # skip cosine annealing
-                                              background_rgb=background_latent)
+                                              background_rgb=background_rgb,
+                                              intrinsics=intrinsic,
+                                              intrinsics_inv=intrinsic_inv,
+                                              poses=pose,
+                                              images=image_gray)
           
-            if is_train:
-                if self.half:
-                    out_fine.append(render_out['color_fine'].half())
-                else:
-                    out_fine.append(render_out['color_fine'])
+            # if is_train:
+            #     if self.half:
+            #         out_fine.append(render_out['color_fine'].half())
+            #     else:
+            #         out_fine.append(render_out['color_fine'])
+            # else:
+            #     if self.half:
+            #         out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
+            #     else:
+            #         out_fine.append(render_out['color_fine'].detach().cpu().numpy())
+            if self.half:
+                out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
             else:
-                if self.half:
-                    out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
-                else:
-                    out_fine.append(render_out['color_fine'].detach().cpu().numpy())
+                out_fine.append(render_out['color_fine'].detach().cpu().numpy())
             
             del render_out
             '''
@@ -345,20 +372,21 @@ class LatentPaintTrainer:
         # else:
           #   img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
         # img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
-        if is_train:
-            img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, 3]))
-        else:
-            img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
+        # if is_train:
+        #     img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, 3]))
+        # else:
+        #     img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
+        img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
         return img_fine
     
-    def train_render(self, data: Dict[str, Any]):
-        theta = data['theta']
-        phi = data['phi']
-        radius = data['radius']
+    def train_render(self, img_idx):# , data: Dict[str, Any]):
+        # theta = data['theta']
+        # phi = data['phi']
+        # radius = data['radius']
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
         # pred_rgb = outputs['image']
         
-        pred_latents = self.render_single_image(theta, phi, radius, img_H=self.train_H, img_W=self.train_W, resolution_level=1, is_train=True)    
+        pred_rgb = self.render_single_image(img_idx=img_idx, img_H=self.train_H, img_W=self.train_W, resolution_level=self.neus_cfg['train.train_resolution_level'], is_train=True)    
         
         """
         pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
@@ -373,38 +401,41 @@ class LatentPaintTrainer:
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
         """
         loss = 1
-        return pred_latents, loss
+        return pred_rgb, loss
     
-    def eval_render(self, data):
+    def eval_render(self, img_idx):
         '''
         create the latent image
         '''
-        theta = data['theta']
-        phi = data['phi']
-        radius = data['radius']
+        # theta = data['theta']
+        # phi = data['phi']
+        # radius = data['radius']
         # dim = self.cfg.render.eval_grid_size
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, decode_func=self.diffusion.decode_latents,
           #                                test=True ,dims=(dim,dim))
         # pred_rgb = outputs['image'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        pred_latents = self.render_single_image(theta, phi, radius, img_H=self.eval_H, img_W=self.eval_W, resolution_level=1, is_train=False)
-        
+        # randomly select image
+        pred_rgb = self.render_single_image(img_H=self.eval_H, img_W=self.eval_W, resolution_level=self.neus_cfg['train.validate_resolution_level'], is_train=False, img_idx=img_idx)        
         # texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        return pred_latents, -1  
+        return pred_rgb, -1  
 
-    def log_train_renders(self, preds: torch.Tensor):
+    def log_train_renders(self, preds: torch.Tensor, img_idx):
         # if self.mesh_model.latent_mode:
           #   pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()  # [1, 3, H, W]
         # else:
           #   pred_rgb = preds.permute(0, 2, 3, 1).contiguous().clamp(0, 1)
         # (1, 4, train_grid_size, train_grid_size) -> (train_grid_size, train_grid_size, 3)
         # pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()
+        logger.info(f"log image {img_idx} at step {self.train_step}")
         pred_rgb = preds
         save_path = self.train_renders_path / f'step_{self.train_step:05d}.jpg'
         save_path.parent.mkdir(exist_ok=True)
 
-        pred_rgb = tensor2numpy(pred_rgb)
+        # pred_rgb = tensor2numpy(pred_rgb)
+        pred_rgb = numpy2image(pred_rgb)
 
-        Image.fromarray(pred_rgb).save(save_path)
+        # Image.fromarray(pred_rgb).save(save_path)
+        cv.imwrite(os.path.join(save_path), pred_rgb)
 
     # TODO: figure out how to find the color of vertices
     def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None):

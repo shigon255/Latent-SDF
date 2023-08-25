@@ -39,11 +39,11 @@ def get_view_direction(thetas, phis, overhead, front):
 
 def tensor2numpy(tensor:torch.Tensor) -> np.ndarray:
     tensor = tensor.detach().cpu().numpy()    
-    tensor = (tensor * 255).astype(np.uint8)
+    tensor = (tensor * 255).clip(0, 255).astype(np.uint8)
     return tensor
 
 def numpy2image(array:np.ndarray) -> np.ndarray:
-    array = (array * 255).astype(np.uint8)
+    array = (array * 256).clip(0, 255).astype(np.uint8)
     return array
 
 def make_path(path: Path) -> Path:

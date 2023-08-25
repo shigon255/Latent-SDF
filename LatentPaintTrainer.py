@@ -27,6 +27,7 @@ from models.dataset import Dataset # NeuS images dataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF
 from models.renderer import GeoNeuSRenderer, LatentPaintRenderer,  get_psnr
 from stable_diffusion import StableDiffusion
+from IF import IFDiffusion
 from utils import make_path, tensor2numpy, numpy2image, near_far_from_sphere, read_intrinsic_inv, gen_random_ray_at_pose
 import gc
 
@@ -87,6 +88,7 @@ class LatentPaintTrainer:
         params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.color_network.parameters())
 
+        self.params_to_train = params_to_train
         self.renderer = LatentPaintRenderer(self.nerf_outside, 
                                                 self.sdf_network,
                                                 self.deviation_network,
@@ -144,11 +146,12 @@ class LatentPaintTrainer:
         logger.info(model)
         return model
     '''
-    def init_diffusion(self) -> StableDiffusion:
-        diffusion_model = StableDiffusion(self.device, model_name=self.cfg.guide.diffusion_name,
-                                          concept_name=self.cfg.guide.concept_name,
-                                          latent_mode=True, half=self.half)
+    def init_diffusion(self):#  -> StableDiffusion:
+        # diffusion_model = StableDiffusion(self.device, model_name=self.cfg.guide.diffusion_name,
+          #                                 concept_name=self.cfg.guide.concept_name,
+            #                               latent_mode=True, half=self.half)
                                           # latent_mode=self.mesh_model.latent_mode)
+        diffusion_model = IFDiffusion(self.device, half=self.half)
         for p in diffusion_model.parameters():
             p.requires_grad = False
         return diffusion_model
@@ -207,9 +210,9 @@ class LatentPaintTrainer:
 
                 self.optimizer.zero_grad()
                 # pred_latents: (1, 4, 64, 64)
+                # pred_rgb: (H/l, W/l, 3)
                 pred_rgb, loss = self.train_render(i) # render ith image
                 self.optimizer.step()
-
                 # if np.random.uniform(0, 1) < 0.05:
                 if np.random.uniform(0, 1) < 1.0:
                     # Randomly log rendered images throughout the training                
@@ -225,8 +228,6 @@ class LatentPaintTrainer:
                     self.nerf_outside.train()
                     self.deviation_network.train()
                     self.color_network.train()
-                
-
         
         logger.info('Finished Training ^_^')
         logger.info('Evaluating the last model...')
@@ -344,20 +345,16 @@ class LatentPaintTrainer:
                                               poses=pose,
                                               images=image_gray)
           
-            # if is_train:
-            #     if self.half:
-            #         out_fine.append(render_out['color_fine'].half())
-            #     else:
-            #         out_fine.append(render_out['color_fine'])
-            # else:
-            #     if self.half:
-            #         out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
-            #     else:
-            #         out_fine.append(render_out['color_fine'].detach().cpu().numpy())
-            if self.half:
-                out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
+            if is_train:
+                if self.half:
+                    out_fine.append(render_out['color_fine'].half())
+                else:
+                    out_fine.append(render_out['color_fine'])
             else:
-                out_fine.append(render_out['color_fine'].detach().cpu().numpy())
+                if self.half:
+                    out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
+                else:
+                    out_fine.append(render_out['color_fine'].detach().cpu().numpy())
             
             del render_out
             '''
@@ -372,11 +369,11 @@ class LatentPaintTrainer:
         # else:
           #   img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
         # img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
-        # if is_train:
-        #     img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, 3]))
-        # else:
-        #     img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
-        img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
+        if is_train:
+            img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, 3]))
+        else:
+            img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
+        
         return img_fine
     
     def train_render(self, img_idx):# , data: Dict[str, Any]):
@@ -386,21 +383,26 @@ class LatentPaintTrainer:
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
         # pred_rgb = outputs['image']
         
+        # (H/l, W/l, 3)
         pred_rgb = self.render_single_image(img_idx=img_idx, img_H=self.train_H, img_W=self.train_W, resolution_level=self.neus_cfg['train.train_resolution_level'], is_train=True)    
+        # (1. 3. H/l, W/l)
+        pred_rgb = pred_rgb.permute(2, 0, 1).unsqueeze(0)
         
-        """
-        pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
+        # pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
         # text embeddings
-        if self.cfg.guide.append_direction:
-            dirs = data['dir']  # [B,]
-            text_z = self.text_z[dirs]
-        else:
-            text_z = self.text_z
+        text_z = self.text_z
+        # if self.cfg.guide.append_direction:
+        #     dirs = data['dir']  # [B,]
+        #     text_z = self.text_z[dirs]
+        # else:
+        #     text_z = self.text_z
         
-        loss_guidance = self.diffusion.train_step(text_z, pred_latents)
+        # loss_guidance = self.diffusion.train_step(text_z, pred_latents)
+        loss_guidance = self.diffusion.train_step(text_z, pred_rgb)
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
-        """
-        loss = 1
+        loss = -1
+
+        pred_rgb = pred_rgb.squeeze(0).permute(1, 2, 0)
         return pred_rgb, loss
     
     def eval_render(self, img_idx):
@@ -431,8 +433,8 @@ class LatentPaintTrainer:
         save_path = self.train_renders_path / f'step_{self.train_step:05d}.jpg'
         save_path.parent.mkdir(exist_ok=True)
 
-        # pred_rgb = tensor2numpy(pred_rgb)
-        pred_rgb = numpy2image(pred_rgb)
+        pred_rgb = tensor2numpy(pred_rgb)
+        # pred_rgb = numpy2image(pred_rgb)
 
         # Image.fromarray(pred_rgb).save(save_path)
         cv.imwrite(os.path.join(save_path), pred_rgb)

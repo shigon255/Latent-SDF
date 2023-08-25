@@ -41,11 +41,12 @@ class StableDiffusion(nn.Module):
             self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
 
         # 2. Load the tokenizer and text encoder to tokenize and encode the text. 
-        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
         # self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
         if half:
+            self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14").half().to(self.device)
             self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").half().to(self.device)
         else:
+            self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
             self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
         self.image_encoder = None
         self.image_processor = None
@@ -143,15 +144,19 @@ class StableDiffusion(nn.Module):
         with torch.no_grad():
             # add noise
             noise = torch.randn_like(latents)
+            print(noise.shape)
             latents_noisy = self.scheduler.add_noise(latents, noise, t)
+            print(latents_noisy.shape)
             # pred noise
             latent_model_input = torch.cat([latents_noisy] * 2)
+            print(latent_model_input.shape)
             noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+            print(noise_pred.shape)
         # torch.cuda.synchronize(); print(f'[TIME] guiding: unet {time.time() - _t:.4f}s')
         # perform guidance (high scale from paper!)
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
+        print(noise_pred.shape)
         # w(t), alpha_t * sigma_t^2
         # w = (1 - self.alphas[t])
         w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
@@ -246,15 +251,15 @@ if __name__ == '__main__':
     parser.add_argument('--steps', type=int, default=50)
     opt = parser.parse_args()
 
-    device = torch.device('cuda')
+    device = torch.device('cuda:1')
 
     sd = StableDiffusion(device)
 
     imgs = sd.prompt_to_img(opt.prompt, opt.H, opt.W, opt.steps)
 
     # visualize image
-    plt.imshow(imgs[0])
-    plt.show()
+    # plt.imshow(imgs[0])
+    # plt.show()
 
 
 

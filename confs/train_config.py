@@ -8,8 +8,8 @@ from loguru import logger
 class RenderConfig:
     """ Parameters for the Mesh Renderer """
     # Render size for training
-    train_grid_H: int = 1024 # Note: please set to at least larger than 1000 to contain the whole object
-    train_grid_W: int = 1024
+    train_grid_H: int = 1200 # Note: please set to at least larger than 1000 to contain the whole object
+    train_grid_W: int = 1600
     # Render size for evaluating
     eval_grid_H: int = 1200
     eval_grid_W: int = 1600
@@ -30,7 +30,7 @@ class GuideConfig:
     # The mesh to paint
     shape_path: str = '~/latent-nerf/shapes/animal.obj'
     # Append direction to text prompts
-    append_direction: bool = True
+    append_direction: bool = False # True
     # A Textual-Inversion concept to use
     concept_name: Optional[str] = None
     # A huggingface diffusion model to use

@@ -612,8 +612,8 @@ class LatentPaintRenderer:
 
         alpha = alpha.reshape(batch_size, n_samples)
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
-        # sampled_color = sampled_color.reshape(batch_size, n_samples, 3)
-        sampled_color = sampled_color.reshape(batch_size, n_samples, 4) # latent color
+        sampled_color = sampled_color.reshape(batch_size, n_samples, 3)
+        # sampled_color = sampled_color.reshape(batch_size, n_samples, 4) # latent color
         color = (weights[:, :, None] * sampled_color).sum(dim=1)
         if background_rgb is not None:
             color = color + background_rgb * (1.0 - weights.sum(dim=-1, keepdim=True))
@@ -721,8 +721,8 @@ class LatentPaintRenderer:
         feature_vector = sdf_nn_output[:, 1:]
 
         gradients = sdf_network.gradient(pts).squeeze()
-        # sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
-        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
+        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+        #sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)

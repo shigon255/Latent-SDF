@@ -33,6 +33,7 @@ import gc
 Latent-Paint Trainer
 '''
 
+
 class LatentPaintTrainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
@@ -64,7 +65,8 @@ class LatentPaintTrainer:
         pyrallis.dump(self.cfg, (self.exp_path / 'config.yaml').open('w'))
 
         # self.mesh_model = self.init_mesh_model()
-        
+        self.anneal_end = self.neus_cfg['train.anneal_end']
+
         # networks
         if self.half:
             self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).half().to(self.device)
@@ -78,7 +80,7 @@ class LatentPaintTrainer:
             self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
 
         self.sdf_network.eval()
-        self.sdf_network.freeze() # freeze the sdf network
+        self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
         params_to_train = []
         params_to_train += list(self.nerf_outside.parameters())
         params_to_train += list(self.deviation_network.parameters())
@@ -99,10 +101,10 @@ class LatentPaintTrainer:
         # instead of load the whole Geo-NeuS dataset, only load the data we need(intrinsic)
         self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device, half=self.half)
         self.intrinsic_inv = read_intrinsic_inv(self.neus_cfg['dataset']).to(torch.float16).to(self.device)
-        self.train_H = self.cfg.render.train_grid_size
-        self.train_W = self.cfg.render.train_grid_size
-        self.eval_H = self.cfg.render.eval_grid_size
-        self.eval_W = self.cfg.render.eval_grid_size
+        self.train_H = self.cfg.render.train_grid_H
+        self.train_W = self.cfg.render.train_grid_W
+        self.eval_H = self.cfg.render.eval_grid_H
+        self.eval_W = self.cfg.render.eval_grid_W
 
         # frame = inspect.currentframe()     
         # self.gpu_tracker = MemTracker(frame) 
@@ -203,6 +205,12 @@ class LatentPaintTrainer:
                 pred_latents, loss = self.train_render(data)
                 self.optimizer.step()
 
+                if np.random.uniform(0, 1) < 0.05:
+                    # Randomly log rendered images throughout the training                
+                    self.log_train_renders(pred_latents)
+                
+                del pred_latents
+
                 if self.train_step % self.cfg.log.save_interval == 0:
                     self.save_checkpoint(full=True)
                     self.evaluate(self.dataloaders['val'], self.eval_renders_path)
@@ -211,15 +219,18 @@ class LatentPaintTrainer:
                     self.deviation_network.train()
                     self.color_network.train()
                 
-                if np.random.uniform(0, 1) < 0.05:
-                    # Randomly log rendered images throughout the training                
-                    self.log_train_renders(pred_latents)
 
         
         logger.info('Finished Training ^_^')
         logger.info('Evaluating the last model...')
         self.full_eval()
         logger.info('\tDone!')
+
+    def get_cos_anneal_ratio(self):
+        if self.anneal_end == 0.0:
+            return 1.0
+        else:
+            return np.min([1.0, self.train_step / self.anneal_end])
 
     def evaluate(self, dataloader: DataLoader, save_path: Path, save_as_video: bool = False):
         logger.info(f'Evaluating and saving model, iteration #{self.train_step}...')
@@ -234,11 +245,13 @@ class LatentPaintTrainer:
             pred_latents, textures = self.eval_render(data) # note that textures contain dummy value
 
             # encode latent into rgb
-            pred_latents = pred_latents.permute(2, 0, 1).unsqueeze(0) # (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
+            # pred_latents = pred_latents.permute(2, 0, 1).unsqueeze(0) # (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
             
-            pred_rgb = self.diffusion.decode_latents(pred_latents).permute(0, 2, 3, 1).contiguous() # -> (1, train_grid_size, train_grid_size, 3)
-            
-            pred_rgb = tensor2numpy(pred_rgb[0])
+            # pred_rgb = self.diffusion.decode_latents(pred_latents).permute(0, 2, 3, 1).contiguous() # -> (1, train_grid_size, train_grid_size, 3)
+            pred_rgb = pred_latents
+            # pred_rgb = tensor2numpy(pred_rgb[0])
+            # pred_rgb = tensor2numpy(pred_rgb)
+            pred_rgb = numpy2image(pred_rgb)
 
             if save_as_video:
                 all_preds.append(pred_rgb)
@@ -284,41 +297,44 @@ class LatentPaintTrainer:
         if self.cfg.optim.use_neus_view:
             rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(np.random.randint(self.img_dataset.n_images), H=img_H, W=img_W, resolution_level=resolution_level)
         else:
-            rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level)
+            rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level, half=self.half)
         
         H, W, _ = rays_o.shape
         
         rays_o = rays_o.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
         rays_d = rays_d.reshape(-1, 3).split(self.neus_cfg['train.batch_size'])
 
-        out_latent_fine = []
+        out_fine = []
         for idx, (rays_o_batch, rays_d_batch) in enumerate(zip(rays_o, rays_d)):
             rays_o_batch = rays_o_batch.to(self.device)
             rays_d_batch = rays_d_batch.to(self.device)
             near, far = near_far_from_sphere(rays_o_batch, rays_d_batch)
             
-            background_latent = torch.ones([1, 4]) if self.use_white_bkgd else None
+            # background_latent = torch.ones([1, 4]) if self.use_white_bkgd else None
+            background_latent = torch.ones([1, 3]) if self.use_white_bkgd else None
 
             # memory added from here
-            render_out_latent = self.renderer.render(rays_o_batch,
+            render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
                                               near,
                                               far,
-                                              cos_anneal_ratio=0.5, # skip cosine annealing
+                                              cos_anneal_ratio=self.get_cos_anneal_ratio(), # skip cosine annealing
                                               background_rgb=background_latent)
           
-            # if is_train:
-              #   out_latent_fine.append(render_out_latent['color_fine']) # do not detach
-            # else:
-              #   out_latent_fine.append(render_out_latent['color_fine'].detach().cpu().numpy())
-            
-            if self.half:
-                out_latent_fine.append(render_out_latent['color_fine'].half())
+            if is_train:
+                if self.half:
+                    out_fine.append(render_out['color_fine'].half())
+                else:
+                    out_fine.append(render_out['color_fine'])
             else:
-                out_latent_fine.append(render_out_latent['color_fine'])
-            del render_out_latent
+                if self.half:
+                    out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
+                else:
+                    out_fine.append(render_out['color_fine'].detach().cpu().numpy())
+            
+            del render_out
             '''
-            if only del render_out_latent here,
+            if only del render_out here,
             we can even not use torch.cuda.empty_cache()
             '''
             # gc.collect()
@@ -328,7 +344,11 @@ class LatentPaintTrainer:
           #   img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
         # else:
           #   img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
-        img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
+        # img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
+        if is_train:
+            img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, 3]))
+        else:
+            img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
         return img_fine
     
     def train_render(self, data: Dict[str, Any]):
@@ -337,9 +357,10 @@ class LatentPaintTrainer:
         radius = data['radius']
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
         # pred_rgb = outputs['image']
-        # volume rendering, note that pred_latents is latent, not the real rgb
+        
         pred_latents = self.render_single_image(theta, phi, radius, img_H=self.train_H, img_W=self.train_W, resolution_level=1, is_train=True)    
-        # pred_latents: (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
+        
+        """
         pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
         # text embeddings
         if self.cfg.guide.append_direction:
@@ -350,7 +371,8 @@ class LatentPaintTrainer:
         
         loss_guidance = self.diffusion.train_step(text_z, pred_latents)
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
-
+        """
+        loss = 1
         return pred_latents, loss
     
     def eval_render(self, data):
@@ -375,11 +397,12 @@ class LatentPaintTrainer:
         # else:
           #   pred_rgb = preds.permute(0, 2, 3, 1).contiguous().clamp(0, 1)
         # (1, 4, train_grid_size, train_grid_size) -> (train_grid_size, train_grid_size, 3)
-        pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()
+        # pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()
+        pred_rgb = preds
         save_path = self.train_renders_path / f'step_{self.train_step:05d}.jpg'
         save_path.parent.mkdir(exist_ok=True)
 
-        pred_rgb = tensor2numpy(pred_rgb[0])
+        pred_rgb = tensor2numpy(pred_rgb)
 
         Image.fromarray(pred_rgb).save(save_path)
 
@@ -435,6 +458,9 @@ class LatentPaintTrainer:
         # NeRF, variance, and radiance network should not be loaded
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+        self.nerf_outside.load_state_dict(checkpoint['nerf']) # assume that this checkpoint is saved from Geo-NeuS
+        self.color_network.load_state_dict(checkpoint['color_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+        self.deviation_network.load_state_dict(checkpoint['variance_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
 
         logger.info('End')
 

@@ -38,7 +38,7 @@ def get_view_direction(thetas, phis, overhead, front):
 
 
 def tensor2numpy(tensor:torch.Tensor) -> np.ndarray:
-    tensor = tensor.detach().cpu().numpy()
+    tensor = tensor.detach().cpu().numpy()    
     tensor = (tensor * 255).astype(np.uint8)
     return tensor
 
@@ -110,11 +110,12 @@ def read_intrinsic_inv(conf):
 '''
 Project
 '''
-def gen_random_ray_at_pose(theta, phi, radius, H, W, intrincis_inv, resolution_level=1):
+def gen_random_ray_at_pose(theta, phi, radius, H, W, intrincis_inv, resolution_level=1, half=True):
     l = resolution_level
     tx = torch.linspace(0, W - 1, W // l)
     ty = torch.linspace(0, H - 1, H // l)
     pixels_x, pixels_y = torch.meshgrid(tx, ty)
+    
     # device = intrincis_inv.device # device in LatentPaintTrainer
     # pixels_x = pixels_x.to(device)
     # pixels_y = pixels_y.to(device)
@@ -152,15 +153,24 @@ def gen_random_ray_at_pose(theta, phi, radius, H, W, intrincis_inv, resolution_l
     x = radius * np.sin(theta) * np.cos(phi)
     y = radius * np.sin(theta) * np.sin(phi)
     z = radius * np.cos(theta)
-    trans = torch.tensor([x, y, z], dtype=torch.float32)
+    if half:
+        trans = torch.tensor([x, y, z], dtype=torch.float16)
+    else:
+        trans = torch.tensor([x, y, z], dtype=torch.float32)
 
     # Calculate camera's forward, right, and up vectors
     # forward: (-x, -y, -z)
-    forward = -torch.tensor([x, y, z], dtype=torch.float32)
+    if half:
+        forward = -torch.tensor([x, y, z], dtype=torch.float16)
+    else:
+        forward = -torch.tensro([x, y, z], dtype=torch.float32)
     forward /= torch.norm(forward)
     
     # up: (0, 0, radius) - (x, y, z)
-    up = torch.cross(torch.tensor([-x, -y, radius-z], dtype=torch.float32), forward)
+    if half:
+        up = torch.cross(torch.tensor([-x, -y, radius-z], dtype=torch.float16), forward)
+    else:
+        up = torch.cross(torch.tensor([-x, -y, radius-z], dtype=torch.float32), forward)
     up /= torch.norm(up)
     
     right = torch.cross(forward, up)

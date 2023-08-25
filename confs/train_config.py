@@ -7,10 +7,12 @@ from loguru import logger
 @dataclass
 class RenderConfig:
     """ Parameters for the Mesh Renderer """
-    # Render width for training
-    train_grid_size: int = 64 # 64
-    # Render height for training
-    eval_grid_size: int = 64 # 512
+    # Render size for training
+    train_grid_H: int = 32
+    train_grid_W: int = 32
+    # Render size for evaluating
+    eval_grid_H: int = 1200
+    eval_grid_W: int = 1600
     # training camera radius range
     radius_range: Tuple[float, float] = (20.0, 20.5)# (1.0, 1.5)
     # Set [0,angle_overhead] as the overhead region

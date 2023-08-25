@@ -64,7 +64,7 @@ class StableDiffusion(nn.Module):
         if half:
             self.alphas = self.scheduler.alphas_cumprod.half().to(self.device) # for convenience
         else:
-            self.alphas = self.scheduler.alphas_cumprod.to(self.device) # for convenience
+            self.alphas = self.scheduler.alphas_cumprod.half().to(self.device) # for convenience
 
         if concept_name is not None:
             self.load_concept(concept_name)

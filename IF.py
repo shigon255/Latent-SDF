@@ -6,10 +6,13 @@ from diffusers.utils import pt_to_pil
 # suppress partial model loading warning
 logging.set_verbosity_error()
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchviz import make_dot
 from loguru import logger
+import cv2 as cv
 
 class IFDiffusion(nn.Module):
     def __init__(self, device, model_name="DeepFloyd/IF-I-M-v1.0", half=True):
@@ -43,24 +46,27 @@ class IFDiffusion(nn.Module):
         self.generator = torch.manual_seed(1)
 
     def get_text_embeds(self, prompt):
-        # Tokenize text and get embeddings
-        text_input = self.pipeline.tokenizer(prompt, padding='max_length', max_length=self.pipeline.tokenizer.model_max_length, truncation=True, return_tensors='pt')
-        with torch.no_grad():
-            text_embeddings = self.pipeline.text_encoder(text_input.input_ids.to(self.device))[0]
+        # # Tokenize text and get embeddings
+        # text_input = self.pipeline.tokenizer(prompt, padding='max_length', max_length=self.pipeline.tokenizer.model_max_length, truncation=True, return_tensors='pt')
+        # with torch.no_grad():
+        #     text_embeddings = self.pipeline.text_encoder(text_input.input_ids.to(self.device))[0]
 
-        # Do the same for unconditional embeddings
-        uncond_input = self.pipeline.tokenizer([''] * len(prompt), padding='max_length', max_length=self.pipeline.tokenizer.model_max_length, return_tensors='pt')
+        # # Do the same for unconditional embeddings
+        # uncond_input = self.pipeline.tokenizer([''] * len(prompt), padding='max_length', max_length=self.pipeline.tokenizer.model_max_length, return_tensors='pt')
 
-        with torch.no_grad():
-            uncond_embeddings = self.pipeline.text_encoder(uncond_input.input_ids.to(self.device))[0]
+        # with torch.no_grad():
+        #     uncond_embeddings = self.pipeline.text_encoder(uncond_input.input_ids.to(self.device))[0]
 
-        # Cat for final embeddings
-        text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+        # # Cat for final embeddings
+        # text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+        text_embeddings, _ = self.pipeline.encode_prompt(prompt)
         return text_embeddings
     
     def train_step(self, text_embeds, inputs, guidance_scale=100):
         pred_rgb_64 = F.interpolate(inputs, (64, 64), mode='bilinear', align_corners=False)
-        
+        print("pred_rgb_64", pred_rgb_64)
+        print("requires_grad: ", pred_rgb_64.requires_grad)
+        # pred_rgb_64 = inputs
         t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
         with torch.no_grad():
             # add noise
@@ -69,39 +75,52 @@ class IFDiffusion(nn.Module):
             latents_noisy = self.pipeline.scheduler.add_noise(pred_rgb_64, noise, t)
             # pred noise
             # print(latents_noisy.shape)
-            latent_model_input = torch.cat([latents_noisy] * 2)
+            # latent_model_input = torch.cat([latents_noisy] * 2)
             # print(latent_model_input.shape)
             # print(text_embeds.shape)
-            noise_pred = self.pipeline.unet(latent_model_input, t, encoder_hidden_states=text_embeds)[0]
+            noise_pred = self.pipeline.unet(latents_noisy, t, encoder_hidden_states=text_embeds)[0]
+            print(noise_pred)
             # print(noise_pred.shape)
             
         # no guidance
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred_uncond, _ = noise_pred_uncond.split(latent_model_input.shape[1], dim=1)
-        noise_pred_text, predicted_variance = noise_pred_text.split(latent_model_input.shape[1], dim=1)
+        # noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        # noise_pred_uncond, _ = noise_pred_uncond.split(latent_model_input.shape[1], dim=1)
+        # noise_pred_text, predicted_variance = noise_pred_text.split(latent_model_input.shape[1], dim=1)
         # print(noise_pred_uncond.shape)
         # print(noise_pred_text.shape)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
         # noise_pred = torch.cat([noise_pred, predicted_variance], dim=1)
+        noise_pred, _ = noise_pred.split(latents_noisy.shape[1], dim=1)
         w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
         # print(w.shape)
         # print(noise_pred.shape)
         # print(noise.shape)
+        print(w)        
         grad = w * (noise_pred - noise)
+        print("before clip grad: ", grad)
+        grad = grad.clamp(-0.01, 0.01)
+        print("after clip grad: ", grad)
+    
 
-        pred_rgb_64.backward(gradient=grad, retain_graph=True)
+        print("any: ", grad.any())
+        if math.isnan(grad[0, 0, 0, 0]):
+            raise NotImplementedError
+        with torch.autograd.detect_anomaly():
+            pred_rgb_64.backward(gradient=grad, retain_graph=True)
+
 
         return 0 # dummy loss value
 
     def generate_image(self, prompt):
-        embeds = self.get_text_embeds(prompt)
+        # embeds = self.get_text_embeds(prompt)
+        embeds, _ = self.pipeline.encode_prompt(prompt)
         
         image = self.pipeline(
             prompt_embeds=embeds, generator=self.generator, output_type="pt"
         ).images
-        print(image.shape)
         pt_to_pil(image)[0].save("./if_stage_I.png")
 
+        return image
         # if half:
         #     self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).half().to(self.device)
         # else:
@@ -109,4 +128,4 @@ class IFDiffusion(nn.Module):
 
 if __name__ == "__main__" :
     model = IFDiffusion(device='cuda:1')
-    model.generate_image('A cat')
+    image = model.generate_image('A blue cat')

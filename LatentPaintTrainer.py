@@ -31,6 +31,8 @@ from IF import IFDiffusion
 from utils import make_path, tensor2numpy, numpy2image, near_far_from_sphere, read_intrinsic_inv, gen_random_ray_at_pose
 import gc
 
+os.environ['CURL_CA_BUNDLE'] = ''
+
 '''
 Latent-Paint Trainer
 '''
@@ -82,11 +84,15 @@ class LatentPaintTrainer:
             self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
 
         self.sdf_network.eval()
+        self.nerf_outside.eval()
+        self.deviation_network.eval()
+        self.color_network.train()
         # self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
         params_to_train = []
-        params_to_train += list(self.nerf_outside.parameters())
-        params_to_train += list(self.deviation_network.parameters())
+        # params_to_train += list(self.nerf_outside.parameters())
+        # params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.color_network.parameters())
+
 
         self.params_to_train = params_to_train
         self.renderer = LatentPaintRenderer(self.nerf_outside, 
@@ -120,7 +126,7 @@ class LatentPaintTrainer:
         if self.cfg.optim.resume:
             self.load_checkpoint(model_only=False)
         if cfg.neus.load_from_neus:
-            self.load_checkpoint_only_sdf(cfg.neus.neus_ckpt_path)
+            self.load_checkpoint_from_neus(cfg.neus.neus_ckpt_path)
         if self.cfg.optim.ckpt is not None:
             self.load_checkpoint(self.cfg.optim.ckpt, model_only=True)
 
@@ -193,10 +199,10 @@ class LatentPaintTrainer:
         
         # Evaluate the initialization
         # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
-        self.evaluate(self.eval_renders_path)
+        # self.evaluate(self.eval_renders_path)
         # self.mesh_model.train()
-        self.nerf_outside.train()
-        self.deviation_network.train()
+        # self.nerf_outside.train()
+        # self.deviation_network.train()
         self.color_network.train()
 
         pbar = tqdm(total=self.cfg.optim.iters, initial=self.train_step,
@@ -212,6 +218,7 @@ class LatentPaintTrainer:
                 # pred_latents: (1, 4, 64, 64)
                 # pred_rgb: (H/l, W/l, 3)
                 pred_rgb, loss = self.train_render(i) # render ith image
+                nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
                 self.optimizer.step()
                 # if np.random.uniform(0, 1) < 0.05:
                 if np.random.uniform(0, 1) < 1.0:
@@ -225,8 +232,8 @@ class LatentPaintTrainer:
                     # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
                     self.evaluate(self.eval_renders_path)
                     # self.mesh_model.train()
-                    self.nerf_outside.train()
-                    self.deviation_network.train()
+                    # self.nerf_outside.train()
+                    # self.deviation_network.train()
                     self.color_network.train()
         
         logger.info('Finished Training ^_^')
@@ -243,8 +250,8 @@ class LatentPaintTrainer:
     def evaluate(self, save_path: Path, full_eval: bool = False):
         logger.info(f'Evaluating and saving model, iteration #{self.train_step}...')
         # self.mesh_model.eval()
-        self.nerf_outside.eval()
-        self.deviation_network.eval()
+        # self.nerf_outside.eval()
+        # self.deviation_network.eval()
         self.color_network.eval()
         save_path.mkdir(exist_ok=True)
 
@@ -276,7 +283,7 @@ class LatentPaintTrainer:
                 cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_rgb)
 
         # also store mesh
-        # self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold)
+        self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold, half=self.cfg.global_setting.half)
         '''
         Project
         No texture can be shown/saved
@@ -338,7 +345,8 @@ class LatentPaintTrainer:
                                               rays_d_batch,
                                               near,
                                               far,
-                                              cos_anneal_ratio=self.get_cos_anneal_ratio(), # skip cosine annealing
+                                              # cos_anneal_ratio=self.get_cos_anneal_ratio(), # skip cosine annealing
+                                              cos_anneal_ratio=0.5, # skip cosine annealing
                                               background_rgb=background_rgb,
                                               intrinsics=intrinsic,
                                               intrinsics_inv=intrinsic_inv,
@@ -376,8 +384,14 @@ class LatentPaintTrainer:
         
         return img_fine
     
+    def check_all_grad(self):    
+        for name, param in self.color_network.named_parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                print(f"Layer {name} has NaN gradients")
+
+
     def train_render(self, img_idx):# , data: Dict[str, Any]):
-        # theta = data['theta']
+        # theta = data['theta'] 
         # phi = data['phi']
         # radius = data['radius']
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
@@ -385,8 +399,8 @@ class LatentPaintTrainer:
         
         # (H/l, W/l, 3)
         pred_rgb = self.render_single_image(img_idx=img_idx, img_H=self.train_H, img_W=self.train_W, resolution_level=self.neus_cfg['train.train_resolution_level'], is_train=True)    
-        # (1. 3. H/l, W/l)
-        pred_rgb = pred_rgb.permute(2, 0, 1).unsqueeze(0)
+        # turn BGR to RGB, then to (1, 3, H/l, W/l)
+        pred_rgb = pred_rgb[..., [2, 1, 0]].permute(2, 0, 1).unsqueeze(0)
         
         # pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
         # text embeddings
@@ -401,8 +415,11 @@ class LatentPaintTrainer:
         loss_guidance = self.diffusion.train_step(text_z, pred_rgb)
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
         loss = -1
-
-        pred_rgb = pred_rgb.squeeze(0).permute(1, 2, 0)
+        print("==============pred_rgb.grad=========")
+        print(pred_rgb.grad)
+        self.check_all_grad()
+        raise NotImplementedError
+        pred_rgb = pred_rgb.squeeze(0).permute(1, 2, 0)[..., [2, 1, 0]]
         return pred_rgb, loss
     
     def eval_render(self, img_idx):
@@ -440,16 +457,17 @@ class LatentPaintTrainer:
         cv.imwrite(os.path.join(save_path), pred_rgb)
 
     # TODO: figure out how to find the color of vertices
-    def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None):
+    def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None, half=True):
         print('Start exporting textured mesh')
+        dtype = torch.float16 if half else torch.float32
 
-        bound_min = torch.tensor(self.img_dataset.object_bbox_min, dtype=torch.float32)
-        bound_max = torch.tensor(self.img_dataset.object_bbox_max, dtype=torch.float32)
+        bound_min = torch.tensor(self.img_dataset.object_bbox_min, dtype=dtype)
+        bound_max = torch.tensor(self.img_dataset.object_bbox_max, dtype=dtype)
         vertices, triangles = self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution,
                                                                threshold=threshold)
         print(f'Vertices count: {vertices.shape[0]}')
 
-        vertices = torch.tensor(vertices, dtype=torch.float32)
+        vertices = torch.tensor(vertices, dtype=dtype)
         vertices_batch = vertices.split(self.neus_cfg['train.batch_size'])
         render_iter = len(vertices_batch)
 
@@ -458,17 +476,17 @@ class LatentPaintTrainer:
             feature_vector = self.sdf_network.sdf_hidden_appearance(vertices_batch[iter])[:, 1:]
             gradients = self.sdf_network.gradient(vertices_batch[iter]).squeeze()
             dirs = -gradients
-            # vertex color: (self.neus_cfg['train.batch_size'], 4)
+            # vertex color: (self.neus_cfg['train.batch_size'], 3)
             vertex_color = self.color_network(vertices_batch[iter], gradients, dirs,
-                                                feature_vector).reshape(self.neus_cfg['train.batch_size'], 4)  # BGR to RGB
-            print(vertex_color.shape)
-            vertex_color = vertex_color.view(self.neus_cfg['train.batch_size'] // 2, 2, 4).permute(2, 0, 1).unsqueeze(0)
-            print(vertex_color.shape)
-            vertex_color = self.diffusion.decode_latents(vertex_color).permute(0, 2, 3, 1).contiguous() # -> (1, self.neus_cfg['train.batch_size'] // 2, 2, 3)
-            print(vertex_color.shape)
-            vertex_color = vertex_color.squeeze(0).view(1, self.neus_cfg['train.batch_size'], 3) # -> (self.neus_cfg['train.batch_size'], 3)
-            print(vertex_color.shape)
-            vertex_color = vertex_color.detach().cpu().numpy()
+                                                feature_vector).detach().cpu().numpy()[..., ::-1]
+            # print(vertex_color.shape)
+            # vertex_color = vertex_color.reshape(-1, 3)  
+            # print(vertex_color.shape)
+            # vertex_color = vertex_color.view(self.neus_cfg['train.batch_size'] // 2, 2, 3).permute(2, 0, 1).unsqueeze(0)
+            # vertex_color = self.diffusion.decode_latents(vertex_color).permute(0, 2, 3, 1).contiguous() # -> (1, self.neus_cfg['train.batch_size'] // 2, 2, 3)
+            # vertex_color = vertex_color.squeeze(0).view(1, self.neus_cfg['train.batch_size'], 3) # -> (self.neus_cfg['train.batch_size'], 3)
+            # vertex_color = vertex_color # BGR to RGB
+            # Note: please aware that if the color decode from latent is BGR or RGB
             vertex_colors.append(vertex_color)
         vertex_colors = np.concatenate(vertex_colors)
         print(f'validate point count: {vertex_colors.shape[0]}')
@@ -491,9 +509,9 @@ class LatentPaintTrainer:
         # NeRF, variance, and radiance network should not be loaded
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
-        self.nerf_outside.load_state_dict(checkpoint['nerf']) # assume that this checkpoint is saved from Geo-NeuS
-        self.color_network.load_state_dict(checkpoint['color_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
-        self.deviation_network.load_state_dict(checkpoint['variance_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+        # self.nerf_outside.load_state_dict(checkpoint['nerf']) # assume that this checkpoint is saved from Geo-NeuS
+        # self.color_network.load_state_dict(checkpoint['color_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+        # self.deviation_network.load_state_dict(checkpoint['variance_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
 
         logger.info('End')
 

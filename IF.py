@@ -14,10 +14,13 @@ from torchviz import make_dot
 from loguru import logger
 import cv2 as cv
 
+
 class IFDiffusion(nn.Module):
     def __init__(self, device, model_name="DeepFloyd/IF-I-M-v1.0", half=True):
         super().__init__()
 
+        print("DNS error! please do not use this part for now")
+        raise NotImplementedError
         try:
             with open('./TOKEN', 'r') as f:
                 self.token = f.read().replace('\n', '') # remove the last \n!
@@ -62,10 +65,10 @@ class IFDiffusion(nn.Module):
         text_embeddings, _ = self.pipeline.encode_prompt(prompt)
         return text_embeddings
     
-    def train_step(self, text_embeds, inputs, guidance_scale=100):
+    def train_step(self, text_embeds, inputs, guidance_scale=100, params_to_train=None):
         pred_rgb_64 = F.interpolate(inputs, (64, 64), mode='bilinear', align_corners=False)
-        print("pred_rgb_64", pred_rgb_64)
-        print("requires_grad: ", pred_rgb_64.requires_grad)
+        # print("pred_rgb_64", pred_rgb_64)
+        # print("requires_grad: ", pred_rgb_64.requires_grad)
         # pred_rgb_64 = inputs
         t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
         with torch.no_grad():
@@ -79,7 +82,7 @@ class IFDiffusion(nn.Module):
             # print(latent_model_input.shape)
             # print(text_embeds.shape)
             noise_pred = self.pipeline.unet(latents_noisy, t, encoder_hidden_states=text_embeds)[0]
-            print(noise_pred)
+            # print(noise_pred)
             # print(noise_pred.shape)
             
         # no guidance
@@ -95,18 +98,19 @@ class IFDiffusion(nn.Module):
         # print(w.shape)
         # print(noise_pred.shape)
         # print(noise.shape)
-        print(w)        
+        # print(w)        
         grad = w * (noise_pred - noise)
-        print("before clip grad: ", grad)
+        # print("before clip grad: ", grad)
         # grad = grad.clamp(-0.01, 0.01)
-        print("after clip grad: ", grad)
+        # print("after clip grad: ", grad)
     
 
-        print("any: ", grad.any())
+        # print("any: ", grad.any())
         if math.isnan(grad[0, 0, 0, 0]):
             raise NotImplementedError
         # with torch.autograd.detect_anomaly():
-        pred_rgb_64.backward(gradient=grad, retain_graph=True)
+        # pred_rgb_64.backward(gradient=grad, retain_graph=True)
+        torch.autograd.grad(outputs=pred_rgb_64, inputs=params_to_train, grad_outputs=grad)
 
 
         return 0 # dummy loss value

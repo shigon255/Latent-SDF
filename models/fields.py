@@ -316,4 +316,9 @@ class SingleVarianceNetwork(nn.Module):
     def forward(self, x):
         return torch.ones([len(x), 1]).to(x.device) * torch.exp(self.variance * 10.0)
 
-
+    def freeze(self):
+        '''
+        Freeze the network during the painting phase
+        '''
+        for param in self.parameters():
+            param.requires_grad = False

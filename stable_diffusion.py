@@ -42,12 +42,8 @@ class StableDiffusion(nn.Module):
 
         # 2. Load the tokenizer and text encoder to tokenize and encode the text. 
         # self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
-        if half:
-            self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14").half().to(self.device)
-            self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").half().to(self.device)
-        else:
-            self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
-            self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
         self.image_encoder = None
         self.image_processor = None
 
@@ -120,7 +116,7 @@ class StableDiffusion(nn.Module):
         return text_embeddings
 
 
-    def train_step(self, text_embeddings, inputs, guidance_scale=100, gpu_tracker=None):
+    def train_step(self, text_embeddings, inputs, guidance_scale=100, gpu_tracker=None, params_to_train=None):
         
         # interp to 512x512 to be fed into vae.
         # _t = time.time()
@@ -145,19 +141,15 @@ class StableDiffusion(nn.Module):
         with torch.no_grad():
             # add noise
             noise = torch.randn_like(latents)
-            print(noise.shape)
             latents_noisy = self.scheduler.add_noise(latents, noise, t)
-            print(latents_noisy.shape)
             # pred noise
             latent_model_input = torch.cat([latents_noisy] * 2)
-            print(latent_model_input.shape)
             noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-            print(noise_pred.shape)
         # torch.cuda.synchronize(); print(f'[TIME] guiding: unet {time.time() - _t:.4f}s')
         # perform guidance (high scale from paper!)
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-        print(noise_pred.shape)
+        
         # w(t), alpha_t * sigma_t^2
         # w = (1 - self.alphas[t])
         w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
@@ -168,7 +160,9 @@ class StableDiffusion(nn.Module):
 
         # manually backward, since we omitted an item in grad and cannot simply autodiff.
         # _t = time.time()
-        latents.backward(gradient=grad, retain_graph=True)
+        # with torch.autograd.detect_anomaly():
+        # latents.backward(gradient=grad, retain_graph=True)
+        torch.autograd.grad(outputs=latents, inputs=params_to_train, grad_outputs=grad)
         # torch.cuda.synchronize(); print(f'[TIME] guiding: backward {time.time() - _t:.4f}s')
         
         return 0 # dummy loss value

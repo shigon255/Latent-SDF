@@ -92,7 +92,8 @@ class LatentPaintTrainer:
             self.nerf_outside.train()
         else:
             self.nerf_outside.eval()
-        # self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
+        self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
+        self.deviation_network.freeze()
         params_to_train = []
         # params_to_train += list(self.nerf_outside.parameters())
         # params_to_train += list(self.deviation_network.parameters())
@@ -132,13 +133,16 @@ class LatentPaintTrainer:
             [0.187, 0.286, 0.173],  # L2
             [-0.158, 0.189, 0.264],  # L3
             [-0.184, -0.271, -0.473],  # L4
-        ]).to(self.device)
+        ], dtype=torch.float32).to(self.device)
 
         # inverse linear approx to find latent
         A = self.linear_rgb_estimator.T
         regularizer = 1e-2
-        self.linear_rgb_estimator_inv = torch.pinverse(A.T @ A + regularizer * torch.eye(4).cuda()) @ A.T
-        
+        self.linear_rgb_estimator_inv = torch.pinverse(A.T @ A + regularizer * torch.eye(4, dtype=torch.float32).to(self.device)) @ A.T
+        if self.half:
+            self.linear_rgb_estimator = self.linear_rgb_estimator.to(torch.float16)
+            self.linear_rgb_estimator_inv = self.linear_rgb_estimator_inv.to(torch.float16)
+            
         # frame = inspect.currentframe()     
         # self.gpu_tracker = MemTracker(frame) 
         # self.gpu_tracker.track()
@@ -240,7 +244,7 @@ class LatentPaintTrainer:
             for i in range(self.img_dataset.n_images):
                 self.train_step += 1
                 pbar.update(1)
-
+                torch.autograd.set_detect_anomaly(True)
                 self.optimizer.zero_grad()
                 # pred: (H, W, color_ch)
                 pred, loss = self.train_render(i) # render ith image
@@ -250,7 +254,7 @@ class LatentPaintTrainer:
                     # Randomly log rendered images throughout the training                
                     self.log_train_renders(pred, i)
                 
-                del pred_rgb
+                del pred
 
                 if self.train_step % self.cfg.log.save_interval == 0:
                     self.save_checkpoint(full=True)
@@ -307,12 +311,14 @@ class LatentPaintTrainer:
                 # (1, 4, H, W)-> (train_grid_size, train_grid_size, 3)
                 pred = self.diffusion.decode_latents(pred).permute(0, 2, 3, 1).contiguous().squeeze(0)
 
-            pred = tensor2numpy(pred)
+            pred_cpu = pred.detach().cpu()
+            del pred
+            pred_cpu = tensor2numpy(pred_cpu)
 
             if full_eval:
-                all_preds.append(pred)
+                all_preds.append(pred_cpu)
             else:
-                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred)
+                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_cpu)
 
         # also store mesh
         self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold, half=self.cfg.global_setting.half)
@@ -387,16 +393,20 @@ class LatentPaintTrainer:
           
             # training: return torch tensor
             # testing: return detached tensor
-            if is_train:
-                if self.half:
-                    out_fine.append(render_out['color_fine'].half())
-                else:
-                    out_fine.append(render_out['color_fine'])
+            # if is_train:
+            #     if self.half:
+            #         out_fine.append(render_out['color_fine'].half())
+            #     else:
+            #         out_fine.append(render_out['color_fine'])
+            # else:
+            #     if self.half:
+            #         out_fine.append(render_out['color_fine'].half().detach().cpu())
+            #     else:
+            #         out_fine.append(render_out['color_fine'].detach().cpu())
+            if self.half:
+                out_fine.append(render_out['color_fine'].half())
             else:
-                if self.half:
-                    out_fine.append(render_out['color_fine'].half().detach().cpu())
-                else:
-                    out_fine.append(render_out['color_fine'].detach().cpu())
+                out_fine.append(render_out['color_fine'])
             sampled_color = render_out['sampled_color']
             del render_out
             '''
@@ -407,8 +417,8 @@ class LatentPaintTrainer:
             # torch.cuda.empty_cache()
             # print(f"after self.renderer.render", self.gpu_tracker.track())
 
-        img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, self.color_ch]))
-        
+        img_fine = torch.cat(out_fine, dim=0).reshape([H, W, self.color_ch])
+        # print(img_fine.shape)
         return img_fine, sampled_color
     
     def check_all_grad(self):    
@@ -448,20 +458,20 @@ class LatentPaintTrainer:
         # for debug
         pred.retain_grad()
         sampled_color.retain_grad()
-        print(pred.grad)
-        print(sampled_color.grad)
+        # print(pred.grad)
+        # print(sampled_color.grad)
 
-        loss_guidance = self.diffusion.train_step(text_z, pred)
+        loss_guidance = self.diffusion.train_step(text_z, pred, params_to_train=self.params_to_train)
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
         loss = -1
 
         # for debug
-        print("==============pred_rgb.grad=========")
-        print(pred.grad)
-        print("=========sampled_color.grad")
-        print(sampled_color.grad)
-        print(torch.any(torch.isnan(pred.grad)))
-        print(torch.any(torch.isnan(sampled_color)))
+        # print("==============pred_rgb.grad=========")
+        # print(pred.grad)
+        # print("=========sampled_color.grad")
+        # print(sampled_color.grad)
+        # print(torch.any(torch.isnan(pred.grad)))
+        # print(torch.any(torch.isnan(sampled_color)))
         self.check_all_grad()
         # raise NotImplementedError
 
@@ -491,7 +501,7 @@ class LatentPaintTrainer:
         # pred_rgb = outputs['image'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
 
         # pred: (H, W, color_ch)
-        pred = self.render_single_image(img_H=self.eval_H, img_W=self.eval_W, resolution_level=self.neus_cfg['train.validate_resolution_level'], is_train=False, img_idx=img_idx)        
+        pred, _ = self.render_single_image(img_H=self.eval_H, img_W=self.eval_W, resolution_level=self.neus_cfg['train.validate_resolution_level'], is_train=False, img_idx=img_idx)        
 
         # texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
 
@@ -546,16 +556,16 @@ class LatentPaintTrainer:
             dirs = -gradients
             # vertex color: (self.neus_cfg['train.batch_size'], color_ch) (BGR for pixel based)
             vertex_color = self.color_network(vertices_batch[iter], gradients, dirs,
-                                                feature_vector).detach().cpu()
+                                                feature_vector)
             if self.latent:
                 # Note: please aware that if the color decode from latent is BGR or RGB
                 # latent2RGB: 3 * 4 matrix that can transform latent -> RGB
                 latent2RGB = self.linear_rgb_estimator 
                 # (b, 4) -> (b, 3)
-                pred = torch.matmul(pred, latent2RGB.T).numpy()
+                vertex_color = (vertex_color @ latent2RGB).detach().cpu().numpy()
             else:
                 # BGR -> RGB
-                vertex_color = vertex_color.numpy()[..., ::-1]
+                vertex_color = vertex_color.detach().cpu().numpy()[..., ::-1]
             vertex_colors.append(vertex_color)
         vertex_colors = np.concatenate(vertex_colors)
         print(f'validate point count: {vertex_colors.shape[0]}')

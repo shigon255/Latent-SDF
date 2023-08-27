@@ -725,14 +725,14 @@ class LatentPaintRenderer:
         feature_vector = sdf_nn_output[:, 1:]
 
         gradients = sdf_network.gradient(pts).squeeze()
-        print("----------")
-        print("gradient-------------", gradients)
-        print("pts----------", pts)
-        print("dirs-----------", dirs)
-        print("fatures-----------", feature_vector)
+        # print("----------")
+        # print("gradient-------------", gradients)
+        # print("pts----------", pts)
+        # print("dirs-----------", dirs)
+        # print("fatures-----------", feature_vector)
         # sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
         sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, self.color_ch)
-        print("sampled color---------",sampled_color)
+        # print("sampled color---------",sampled_color)
         #sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter

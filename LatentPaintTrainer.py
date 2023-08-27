@@ -248,7 +248,7 @@ class LatentPaintTrainer:
                 self.optimizer.zero_grad()
                 # pred: (H, W, color_ch)
                 pred, loss = self.train_render(i) # render ith image
-                nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
+                # nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
                 self.optimizer.step()
                 if np.random.uniform(0, 1) < 0.05:
                     # Randomly log rendered images throughout the training                
@@ -317,8 +317,8 @@ class LatentPaintTrainer:
 
             if full_eval:
                 all_preds.append(pred_cpu)
-            else:
-                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_cpu)
+            else:   
+                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_cpu[..., ::-1] if self.latent else pred_cpu)
 
         # also store mesh
         self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold, half=self.cfg.global_setting.half)

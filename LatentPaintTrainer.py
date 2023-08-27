@@ -31,8 +31,6 @@ from IF import IFDiffusion
 from utils import make_path, tensor2numpy, numpy2image, near_far_from_sphere, read_intrinsic_inv, gen_random_ray_at_pose
 import gc
 
-os.environ['CURL_CA_BUNDLE'] = ''
-
 '''
 Latent-Paint Trainer
 '''
@@ -44,6 +42,8 @@ class LatentPaintTrainer:
         self.train_step = 0
         self.device = torch.device(cfg.global_setting.gpu)
         self.half = cfg.global_setting.half
+        self.latent = cfg.global_setting.latent
+        self.color_ch = 4 if self.latent else 3
 
         # load neus config
         self.neus_cfg_path = cfg.neus.neus_cfg_path
@@ -71,27 +71,34 @@ class LatentPaintTrainer:
         # self.mesh_model = self.init_mesh_model()
         self.anneal_end = self.neus_cfg['train.anneal_end']
 
+        model_name = "latent_model" if self.latent else "model"
+
         # networks
         if self.half:
-            self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).half().to(self.device)
-            self.color_network = RenderingNetwork(**self.neus_cfg['latent_model.rendering_network']).half().to(self.device)
-            self.deviation_network = SingleVarianceNetwork(**self.neus_cfg['model.variance_network']).half().to(self.device)
-            self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).half().to(self.device)
+            self.nerf_outside = NeRF(**self.neus_cfg[model_name+'.nerf']).half().to(self.device)
+            self.color_network = RenderingNetwork(**self.neus_cfg[model_name+'.rendering_network']).half().to(self.device)
+            self.deviation_network = SingleVarianceNetwork(**self.neus_cfg[model_name+'.variance_network']).half().to(self.device)
+            self.sdf_network = SDFNetwork(**self.neus_cfg[model_name+'.sdf_network']).half().to(self.device)
         else:
-            self.nerf_outside = NeRF(**self.neus_cfg['latent_model.nerf']).to(self.device)
-            self.color_network = RenderingNetwork(**self.neus_cfg['latent_model.rendering_network']).to(self.device)
-            self.deviation_network = SingleVarianceNetwork(**self.neus_cfg['model.variance_network']).to(self.device)
-            self.sdf_network = SDFNetwork(**self.neus_cfg['model.sdf_network']).to(self.device)
+            self.nerf_outside = NeRF(**self.neus_cfg[model_name+'.nerf']).to(self.device)
+            self.color_network = RenderingNetwork(**self.neus_cfg[model_name+'.rendering_network']).to(self.device)
+            self.deviation_network = SingleVarianceNetwork(**self.neus_cfg[model_name+'.variance_network']).to(self.device)
+            self.sdf_network = SDFNetwork(**self.neus_cfg[model_name+'.sdf_network']).to(self.device)
 
         self.sdf_network.eval()
-        self.nerf_outside.eval()
         self.deviation_network.eval()
         self.color_network.train()
+        if self.latent:
+            self.nerf_outside.train()
+        else:
+            self.nerf_outside.eval()
         # self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
         params_to_train = []
         # params_to_train += list(self.nerf_outside.parameters())
         # params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.color_network.parameters())
+        if self.latent:
+            params_to_train += list(self.nerf_outside.parameters())
 
 
         self.params_to_train = params_to_train
@@ -99,7 +106,8 @@ class LatentPaintTrainer:
                                                 self.sdf_network,
                                                 self.deviation_network,
                                                 self.color_network,
-                                                **self.neus_cfg['model.neus_renderer']
+                                                color_ch=self.color_ch,
+                                                **self.neus_cfg[model_name+'.neus_renderer']
                                                 )
         self.use_white_bkgd = cfg.neus.use_white_bkgd
 
@@ -118,6 +126,19 @@ class LatentPaintTrainer:
         self.eval_size = 1 # randomly evaluate 1 image
         self.full_eval_size = self.img_dataset.n_images # evaluate all images
 
+        self.linear_rgb_estimator = torch.tensor([
+            #   R       G       B
+            [0.298, 0.207, 0.208],  # L1
+            [0.187, 0.286, 0.173],  # L2
+            [-0.158, 0.189, 0.264],  # L3
+            [-0.184, -0.271, -0.473],  # L4
+        ]).to(self.device)
+
+        # inverse linear approx to find latent
+        A = self.linear_rgb_estimator.T
+        regularizer = 1e-2
+        self.linear_rgb_estimator_inv = torch.pinverse(A.T @ A + regularizer * torch.eye(4).cuda()) @ A.T
+        
         # frame = inspect.currentframe()     
         # self.gpu_tracker = MemTracker(frame) 
         # self.gpu_tracker.track()
@@ -126,7 +147,10 @@ class LatentPaintTrainer:
         if self.cfg.optim.resume:
             self.load_checkpoint(model_only=False)
         if cfg.neus.load_from_neus:
-            self.load_checkpoint_from_neus(cfg.neus.neus_ckpt_path)
+            if self.latent:
+                self.load_checkpoint_only_sdf_dev(cfg.neus.neus_ckpt_path)
+            else:
+                self.load_checkpoint_from_neus(cfg.neus.neus_ckpt_path)
         if self.cfg.optim.ckpt is not None:
             self.load_checkpoint(self.cfg.optim.ckpt, model_only=True)
 
@@ -153,11 +177,12 @@ class LatentPaintTrainer:
         return model
     '''
     def init_diffusion(self):#  -> StableDiffusion:
-        # diffusion_model = StableDiffusion(self.device, model_name=self.cfg.guide.diffusion_name,
-          #                                 concept_name=self.cfg.guide.concept_name,
-            #                               latent_mode=True, half=self.half)
-                                          # latent_mode=self.mesh_model.latent_mode)
-        diffusion_model = IFDiffusion(self.device, half=self.half)
+        if self.latent:
+            diffusion_model = StableDiffusion(self.device, model_name=self.cfg.guide.diffusion_name,
+                                            concept_name=self.cfg.guide.concept_name,
+                                            latent_mode=True, half=self.half)
+        else:
+            diffusion_model = IFDiffusion(self.device, half=self.half)
         for p in diffusion_model.parameters():
             p.requires_grad = False
         return diffusion_model
@@ -198,43 +223,44 @@ class LatentPaintTrainer:
         logger.info('Starting training ^_^')
         
         # Evaluate the initialization
+        
         # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
-        # self.evaluate(self.eval_renders_path)
         # self.mesh_model.train()
-        # self.nerf_outside.train()
-        # self.deviation_network.train()
+
+        self.evaluate(self.eval_renders_path)
         self.color_network.train()
+        if self.latent:
+            self.nerf_outside.train()
 
         pbar = tqdm(total=self.cfg.optim.iters, initial=self.train_step,
                     bar_format='{desc}: {percentage:3.0f}% training step {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         while self.train_step < self.cfg.optim.iters:
             # Keep going over dataloader until finished the required number of iterations
-            # for i, data in enumerate(self.dataloaders['train']):
+            # for i, data in enumer ate(self.dataloaders['train']):
             for i in range(self.img_dataset.n_images):
                 self.train_step += 1
                 pbar.update(1)
 
                 self.optimizer.zero_grad()
-                # pred_latents: (1, 4, 64, 64)
-                # pred_rgb: (H/l, W/l, 3)
-                pred_rgb, loss = self.train_render(i) # render ith image
+                # pred: (H, W, color_ch)
+                pred, loss = self.train_render(i) # render ith image
                 nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
                 self.optimizer.step()
-                # if np.random.uniform(0, 1) < 0.05:
-                if np.random.uniform(0, 1) < 1.0:
+                if np.random.uniform(0, 1) < 0.05:
                     # Randomly log rendered images throughout the training                
-                    self.log_train_renders(pred_rgb, i)
+                    self.log_train_renders(pred, i)
                 
                 del pred_rgb
 
                 if self.train_step % self.cfg.log.save_interval == 0:
                     self.save_checkpoint(full=True)
                     # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
-                    self.evaluate(self.eval_renders_path)
                     # self.mesh_model.train()
-                    # self.nerf_outside.train()
-                    # self.deviation_network.train()
+
+                    self.evaluate(self.eval_renders_path)
                     self.color_network.train()
+                    if self.latent:
+                        self.nerf_outside.train()
         
         logger.info('Finished Training ^_^')
         logger.info('Evaluating the last model...')
@@ -250,9 +276,10 @@ class LatentPaintTrainer:
     def evaluate(self, save_path: Path, full_eval: bool = False):
         logger.info(f'Evaluating and saving model, iteration #{self.train_step}...')
         # self.mesh_model.eval()
-        # self.nerf_outside.eval()
-        # self.deviation_network.eval()
+
         self.color_network.eval()
+        if self.latent:
+            self.nerf_outside.eval()
         save_path.mkdir(exist_ok=True)
 
         eval_size = self.eval_size
@@ -262,25 +289,30 @@ class LatentPaintTrainer:
             eval_size = self.full_eval_size
         else:
             logger.info("Start normal evaluation")
+        
+        # render eval_size images at random views from NeuS dataset
         for i in range(eval_size):
             if not full_eval:
                 img_idx = np.random.randint(self.img_dataset.n_images)
             else:
                 img_idx = i
-            pred_rgb, textures = self.eval_render(img_idx=img_idx) # note that textures contain dummy value
-
-            # encode latent into rgb
-            # pred_latents = pred_latents.permute(2, 0, 1).unsqueeze(0) # (train_grid_size, train_grid_size, 4) -> (1, 4, train_grid_size, train_grid_size)
             
-            # pred_rgb = self.diffusion.decode_latents(pred_latents).permute(0, 2, 3, 1).contiguous() # -> (1, train_grid_size, train_grid_size, 3)
-            # pred_rgb = tensor2numpy(pred_rgb[0])
-            # pred_rgb = tensor2numpy(pred_rgb)
-            pred_rgb = numpy2image(pred_rgb)
+            # pred: (H, W, color_Ch) tensor
+            pred, textures = self.eval_render(img_idx=img_idx) # note that textures contain dummy value
+
+            if self.latent:
+                # encode latent into rgb
+                # (H, W, 4) -> (1, 4, H, W)
+                pred = pred.permute(2, 0, 1).unsqueeze(0)
+                # (1, 4, H, W)-> (train_grid_size, train_grid_size, 3)
+                pred = self.diffusion.decode_latents(pred).permute(0, 2, 3, 1).contiguous().squeeze(0)
+
+            pred = tensor2numpy(pred)
 
             if full_eval:
-                all_preds.append(pred_rgb)
+                all_preds.append(pred)
             else:
-                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_rgb)
+                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred)
 
         # also store mesh
         self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold, half=self.cfg.global_setting.half)
@@ -319,11 +351,13 @@ class LatentPaintTrainer:
         '''
 
     def render_single_image(self, img_H, img_W, resolution_level, is_train, img_idx):
+        # abandon using view dataset
         # if self.cfg.optim.use_neus_view:
           #   rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(img_idx, H=img_H, W=img_W, resolution_level=resolution_level)
         # else:
           #   rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level, half=self.half)
-        # abandon using view dataset
+
+        # generate ray from thie view
         rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(img_idx, H=img_H, W=img_W, resolution_level=resolution_level)
         
         H, W, _ = rays_o.shape
@@ -337,10 +371,8 @@ class LatentPaintTrainer:
             rays_d_batch = rays_d_batch.to(self.device)
             near, far = near_far_from_sphere(rays_o_batch, rays_d_batch)
             
-            # background_latent = torch.ones([1, 4]) if self.use_white_bkgd else None
-            background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
+            background_rgb = torch.ones([1, self.color_ch]) if self.use_white_bkgd else None
 
-            # memory added from here
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
                                               near,
@@ -353,6 +385,8 @@ class LatentPaintTrainer:
                                               poses=pose,
                                               images=image_gray)
           
+            # training: return torch tensor
+            # testing: return detached tensor
             if is_train:
                 if self.half:
                     out_fine.append(render_out['color_fine'].half())
@@ -360,10 +394,10 @@ class LatentPaintTrainer:
                     out_fine.append(render_out['color_fine'])
             else:
                 if self.half:
-                    out_fine.append(render_out['color_fine'].half().detach().cpu().numpy())
+                    out_fine.append(render_out['color_fine'].half().detach().cpu())
                 else:
-                    out_fine.append(render_out['color_fine'].detach().cpu().numpy())
-            
+                    out_fine.append(render_out['color_fine'].detach().cpu())
+            sampled_color = render_out['sampled_color']
             del render_out
             '''
             if only del render_out here,
@@ -372,17 +406,10 @@ class LatentPaintTrainer:
             # gc.collect()
             # torch.cuda.empty_cache()
             # print(f"after self.renderer.render", self.gpu_tracker.track())
-        # if is_train:
-          #   img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4])) # latent image, do not multiply 256, since it'll be used to training
-        # else:
-          #   img_fine = (np.concatenate(out_latent_fine, axis=0).reshape([H, W, 4]))
-        # img_fine = (torch.cat(out_latent_fine, dim=0).reshape([H, W, 4]))
-        if is_train:
-            img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, 3]))
-        else:
-            img_fine = (np.concatenate(out_fine, axis=0).reshape([H, W, 3]))
+
+        img_fine = (torch.cat(out_fine, dim=0).reshape([H, W, self.color_ch]))
         
-        return img_fine
+        return img_fine, sampled_color
     
     def check_all_grad(self):    
         for name, param in self.color_network.named_parameters():
@@ -391,20 +418,25 @@ class LatentPaintTrainer:
 
 
     def train_render(self, img_idx):# , data: Dict[str, Any]):
+
+        # abandon view dataset
         # theta = data['theta'] 
         # phi = data['phi']
         # radius = data['radius']
-        # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius)
-        # pred_rgb = outputs['image']
         
-        # (H/l, W/l, 3)
-        pred_rgb = self.render_single_image(img_idx=img_idx, img_H=self.train_H, img_W=self.train_W, resolution_level=self.neus_cfg['train.train_resolution_level'], is_train=True)    
-        # turn BGR to RGB, then to (1, 3, H/l, W/l)
-        pred_rgb = pred_rgb[..., [2, 1, 0]].permute(2, 0, 1).unsqueeze(0)
+        # pred: (H, W, color_ch)
+        # Note: sampled_color for debug
+        pred, sampled_color = self.render_single_image(img_idx=img_idx, img_H=self.train_H, img_W=self.train_W, resolution_level=self.neus_cfg['train.train_resolution_level'], is_train=True)    
+        if not self.latent:
+            # turn BGR to RGB to fit the diffusion model
+            pred = pred[..., [2, 1, 0]]
+        # (H, W, color_ch) -> (1, color_ch, H, W)
+        pred = pred.permute(2, 0, 1).unsqueeze(0)
         
-        # pred_latents = pred_latents.permute((2, 0, 1)).unsqueeze(0)
         # text embeddings
         text_z = self.text_z
+
+        # Currently do not use guide
         # if self.cfg.guide.append_direction:
         #     dirs = data['dir']  # [B,]
         #     text_z = self.text_z[dirs]
@@ -412,49 +444,85 @@ class LatentPaintTrainer:
         #     text_z = self.text_z
         
         # loss_guidance = self.diffusion.train_step(text_z, pred_latents)
-        loss_guidance = self.diffusion.train_step(text_z, pred_rgb)
+
+        # for debug
+        pred.retain_grad()
+        sampled_color.retain_grad()
+        print(pred.grad)
+        print(sampled_color.grad)
+
+        loss_guidance = self.diffusion.train_step(text_z, pred)
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
         loss = -1
+
+        # for debug
         print("==============pred_rgb.grad=========")
-        print(pred_rgb.grad)
+        print(pred.grad)
+        print("=========sampled_color.grad")
+        print(sampled_color.grad)
+        print(torch.any(torch.isnan(pred.grad)))
+        print(torch.any(torch.isnan(sampled_color)))
         self.check_all_grad()
-        raise NotImplementedError
-        pred_rgb = pred_rgb.squeeze(0).permute(1, 2, 0)[..., [2, 1, 0]]
-        return pred_rgb, loss
+        # raise NotImplementedError
+
+        pred = pred
+        if not self.latent:
+            # (1, 3, H, W) -> (H, W, 3)
+            # RGB -> BGR to save image through cv2
+            pred = pred[..., [2, 1, 0]].squeeze(0).permute(1, 2, 0)
+
+        # Note:
+        #   For pixel-based. pred is (H, W, 3)
+        #   For latent-based, pred is (1, 4, H, W) to be further fed into decoder
+        return pred, loss
     
     def eval_render(self, img_idx):
         '''
         create the latent image
         '''
+        # abandon view from viewdataset
         # theta = data['theta']
         # phi = data['phi']
         # radius = data['radius']
+
         # dim = self.cfg.render.eval_grid_size
         # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, decode_func=self.diffusion.decode_latents,
           #                                test=True ,dims=(dim,dim))
         # pred_rgb = outputs['image'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        # randomly select image
-        pred_rgb = self.render_single_image(img_H=self.eval_H, img_W=self.eval_W, resolution_level=self.neus_cfg['train.validate_resolution_level'], is_train=False, img_idx=img_idx)        
-        # texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        return pred_rgb, -1  
 
-    def log_train_renders(self, preds: torch.Tensor, img_idx):
+        # pred: (H, W, color_ch)
+        pred = self.render_single_image(img_H=self.eval_H, img_W=self.eval_W, resolution_level=self.neus_cfg['train.validate_resolution_level'], is_train=False, img_idx=img_idx)        
+
+        # texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
+
+        return pred, -1  
+
+    def log_train_renders(self, pred: torch.Tensor, img_idx):
         # if self.mesh_model.latent_mode:
           #   pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()  # [1, 3, H, W]
         # else:
           #   pred_rgb = preds.permute(0, 2, 3, 1).contiguous().clamp(0, 1)
         # (1, 4, train_grid_size, train_grid_size) -> (train_grid_size, train_grid_size, 3)
         # pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()
+
         logger.info(f"log image {img_idx} at step {self.train_step}")
-        pred_rgb = preds
+        # pred: 
+        #   For pixel based: (H, W, color_ch)
+        #   For latent based: (1, 4, H, W)
+        if self.latent:
+            # decode the latent image to RGB image
+            # (1, 4, train_grid_size, train_grid_size) -> (train_grid_size, train_grid_size, 3)
+            pred = self.diffusion.decode_latents(pred).permute(0, 2, 3, 1).contiguous().squeeze(0)
+        
         save_path = self.train_renders_path / f'step_{self.train_step:05d}.jpg'
         save_path.parent.mkdir(exist_ok=True)
 
-        pred_rgb = tensor2numpy(pred_rgb)
-        # pred_rgb = numpy2image(pred_rgb)
+        # detach, to numpy, then * 255, clip, turn into uint8
+        pred = tensor2numpy(pred)
 
+        # Note: PIL use RGB, while cv2 use BGR
         # Image.fromarray(pred_rgb).save(save_path)
-        cv.imwrite(os.path.join(save_path), pred_rgb)
+        cv.imwrite(os.path.join(save_path), pred)
 
     # TODO: figure out how to find the color of vertices
     def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None, half=True):
@@ -476,17 +544,18 @@ class LatentPaintTrainer:
             feature_vector = self.sdf_network.sdf_hidden_appearance(vertices_batch[iter])[:, 1:]
             gradients = self.sdf_network.gradient(vertices_batch[iter]).squeeze()
             dirs = -gradients
-            # vertex color: (self.neus_cfg['train.batch_size'], 3)
+            # vertex color: (self.neus_cfg['train.batch_size'], color_ch) (BGR for pixel based)
             vertex_color = self.color_network(vertices_batch[iter], gradients, dirs,
-                                                feature_vector).detach().cpu().numpy()[..., ::-1]
-            # print(vertex_color.shape)
-            # vertex_color = vertex_color.reshape(-1, 3)  
-            # print(vertex_color.shape)
-            # vertex_color = vertex_color.view(self.neus_cfg['train.batch_size'] // 2, 2, 3).permute(2, 0, 1).unsqueeze(0)
-            # vertex_color = self.diffusion.decode_latents(vertex_color).permute(0, 2, 3, 1).contiguous() # -> (1, self.neus_cfg['train.batch_size'] // 2, 2, 3)
-            # vertex_color = vertex_color.squeeze(0).view(1, self.neus_cfg['train.batch_size'], 3) # -> (self.neus_cfg['train.batch_size'], 3)
-            # vertex_color = vertex_color # BGR to RGB
-            # Note: please aware that if the color decode from latent is BGR or RGB
+                                                feature_vector).detach().cpu()
+            if self.latent:
+                # Note: please aware that if the color decode from latent is BGR or RGB
+                # latent2RGB: 3 * 4 matrix that can transform latent -> RGB
+                latent2RGB = self.linear_rgb_estimator 
+                # (b, 4) -> (b, 3)
+                pred = torch.matmul(pred, latent2RGB.T).numpy()
+            else:
+                # BGR -> RGB
+                vertex_color = vertex_color.numpy()[..., ::-1]
             vertex_colors.append(vertex_color)
         vertex_colors = np.concatenate(vertex_colors)
         print(f'validate point count: {vertex_colors.shape[0]}')
@@ -504,14 +573,14 @@ class LatentPaintTrainer:
 
         logger.info('End')
 
-    def load_checkpoint_only_sdf(self, ckpt_path):
+    def load_checkpoint_only_sdf_dev(self, ckpt_path):
         # For load SDF work from pretrained Geo-NeuS model
         # NeRF, variance, and radiance network should not be loaded
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
         # self.nerf_outside.load_state_dict(checkpoint['nerf']) # assume that this checkpoint is saved from Geo-NeuS
         # self.color_network.load_state_dict(checkpoint['color_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
-        # self.deviation_network.load_state_dict(checkpoint['variance_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
+        self.deviation_network.load_state_dict(checkpoint['variance_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
 
         logger.info('End')
 

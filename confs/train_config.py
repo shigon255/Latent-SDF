@@ -66,6 +66,7 @@ class GlobalConfig:
     gpu: str = 'cuda:0'
     half: bool = True
     mode: str = 'latent_paint' # 'latent_paint' for latent paint, 'train' for training Geo-NeuS, 'validate_mesh' for validating mesh, same as 'validate_image', 'eval_image' or 'interpolate'
+    latent: bool = False
 
 @dataclass
 class LogConfig:

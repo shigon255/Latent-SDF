@@ -34,9 +34,9 @@ class IFDiffusion(nn.Module):
         logger.info(f'loading diffusion with {model_name}...')
 
         if half:
-            self.pipeline = DiffusionPipeline.from_pretrained(model_name, variant="fp16", torch_dtype=torch.float16).to(device)
+            self.pipeline = DiffusionPipeline.from_pretrained(model_name, variant="fp16", torch_dtype=torch.float16, use_auth_token=self.token, safety_checker=None, use_safetensors=False).to(device)
         else:
-            self.pipeline = DiffusionPipeline.from_pretrained(model_name, variant="fp32", torch_dtype=torch.float32).to(device)
+            self.pipeline = DiffusionPipeline.from_pretrained(model_name, variant="fp32", torch_dtype=torch.float32, use_auth_token=self.token, safety_checker=None, use_safetensors=False).to(device)
         # self.pipeline.enable_model_cpu_offload()
         if half:
             self.alphas = self.pipeline.scheduler.alphas_cumprod.half().to(device)    
@@ -98,15 +98,15 @@ class IFDiffusion(nn.Module):
         print(w)        
         grad = w * (noise_pred - noise)
         print("before clip grad: ", grad)
-        grad = grad.clamp(-0.01, 0.01)
+        # grad = grad.clamp(-0.01, 0.01)
         print("after clip grad: ", grad)
     
 
         print("any: ", grad.any())
         if math.isnan(grad[0, 0, 0, 0]):
             raise NotImplementedError
-        with torch.autograd.detect_anomaly():
-            pred_rgb_64.backward(gradient=grad, retain_graph=True)
+        # with torch.autograd.detect_anomaly():
+        pred_rgb_64.backward(gradient=grad, retain_graph=True)
 
 
         return 0 # dummy loss value

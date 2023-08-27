@@ -570,11 +570,13 @@ class LatentPaintRenderer:
                  sdf_network,
                  deviation_network,
                  color_network,
+                 color_ch,
                  n_samples,
                  n_importance,
                  n_outside,
                  up_sample_steps,
-                 perturb):
+                 perturb
+                 ):
         self.nerf = nerf
         self.sdf_network = sdf_network
         self.deviation_network = deviation_network
@@ -584,6 +586,7 @@ class LatentPaintRenderer:
         self.n_outside = n_outside
         self.up_sample_steps = up_sample_steps
         self.perturb = perturb
+        self.color_ch = color_ch
 
     def render_core_outside(self, rays_o, rays_d, z_vals, sample_dist, nerf, background_rgb=None):
         """
@@ -612,7 +615,8 @@ class LatentPaintRenderer:
 
         alpha = alpha.reshape(batch_size, n_samples)
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
-        sampled_color = sampled_color.reshape(batch_size, n_samples, 3)
+        sampled_color = sampled_color.reshape(batch_size, n_samples, self.color_ch)
+        # sampled_color = sampled_color.reshape(batch_size, n_samples, 3)
         # sampled_color = sampled_color.reshape(batch_size, n_samples, 4) # latent color
         color = (weights[:, :, None] * sampled_color).sum(dim=1)
         if background_rgb is not None:
@@ -726,7 +730,8 @@ class LatentPaintRenderer:
         print("pts----------", pts)
         print("dirs-----------", dirs)
         print("fatures-----------", feature_vector)
-        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+        # sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, self.color_ch)
         print("sampled color---------",sampled_color)
         #sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
 
@@ -875,8 +880,9 @@ class LatentPaintRenderer:
             'mid_z_vals': mid_z_vals,
             'weights': weights,
             'cdf': c.reshape(batch_size, n_samples),
+            'sampled_color': sampled_color,
             'gradient_error': gradient_error,
-            'inside_sphere': inside_sphere # ,
+            'inside_sphere': inside_sphere, # ,
             # 'depth_sdf': depth_sdf,
             # 'ncc_cost': ncc,
             # 'mid_inside_sphere': mid_inside_sphere
@@ -974,6 +980,7 @@ class LatentPaintRenderer:
             'weight_sum': weights_sum,
             'weight_max': torch.max(weights, dim=-1, keepdim=True)[0],
             'gradients': gradients,
+            'sampled_color': ret_fine['sampled_color'],
             'weights': weights,
             'gradient_error': ret_fine['gradient_error'],
             'inside_sphere': ret_fine['inside_sphere']# ,

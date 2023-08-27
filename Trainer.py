@@ -2,10 +2,14 @@ import torch
 import logging
 import argparse
 import pyrallis
+import os
 
 from GeoNeusTrainer import GeoNeusTrainer
 from LatentPaintTrainer import LatentPaintTrainer
 from confs.train_config import TrainConfig
+
+os.environ['CURL_CA_BUNDLE'] = ''
+
 
 @pyrallis.wrap()
 def main(cfg: TrainConfig):

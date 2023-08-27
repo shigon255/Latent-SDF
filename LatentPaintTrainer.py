@@ -529,10 +529,10 @@ class LatentPaintTrainer:
 
         # detach, to numpy, then * 255, clip, turn into uint8
         pred = tensor2numpy(pred)
-
+        
         # Note: PIL use RGB, while cv2 use BGR
         # Image.fromarray(pred_rgb).save(save_path)
-        cv.imwrite(os.path.join(save_path), pred)
+        cv.imwrite(os.path.join(save_path), pred[..., -1] if self.latent else pred)
 
     # TODO: figure out how to find the color of vertices
     def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None, half=True):

@@ -285,14 +285,14 @@ class NeRF(nn.Module):
             input_pts = self.embed_fn(input_pts)
         if self.embed_fn_view is not None:
             input_views = self.embed_fn_view(input_views)
-
+        
         h = input_pts
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
-
+        print("first h: ", h)
         if self.use_viewdirs:
             alpha = self.alpha_linear(h)
             feature = self.feature_linear(h)
@@ -301,8 +301,11 @@ class NeRF(nn.Module):
             for i, l in enumerate(self.views_linears):
                 h = self.views_linears[i](h)
                 h = F.relu(h)
+                print(f"{i}th h: ", h)
 
             rgb = self.rgb_linear(h)
+            print("rgb: ", rgb)
+            print("alpha: ", alpha)
             return alpha, rgb
         else:
             assert False # enforced to use view direction

@@ -42,7 +42,8 @@ class LatentPaintTrainer:
         self.train_step = 0
         self.device = torch.device(cfg.global_setting.gpu)
         self.half = cfg.global_setting.half
-        self.latent = cfg.global_setting.latent
+        # self.latent = cfg.global_setting.latent
+        self.latent = True # for latent = False(pixel based), there might be some connection bug
         self.color_ch = 4 if self.latent else 3
 
         # load neus config
@@ -98,9 +99,11 @@ class LatentPaintTrainer:
         # params_to_train += list(self.nerf_outside.parameters())
         # params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.color_network.parameters())
-        if self.latent:
-            params_to_train += list(self.nerf_outside.parameters())
+        # if self.latent:
+          #   params_to_train += list(self.nerf_outside.parameters())
 
+        for param in self.color_network.parameters():
+            param.requires_grad = True
 
         self.params_to_train = params_to_train
         self.renderer = LatentPaintRenderer(self.nerf_outside, 
@@ -114,7 +117,7 @@ class LatentPaintTrainer:
 
         self.diffusion = self.init_diffusion()
         self.text_z = self.calc_text_embeddings()
-        self.optimizer = self.init_optimizer(params_to_train)
+        self.optimizer = self.init_optimizer(self.params_to_train)
         # self.dataloaders = self.init_dataloaders() # random view dataset
         # instead of load the whole Geo-NeuS dataset, only load the data we need(intrinsic)
         self.img_dataset = Dataset(self.neus_cfg['dataset'], device=self.device, half=self.half)
@@ -231,7 +234,7 @@ class LatentPaintTrainer:
         # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
         # self.mesh_model.train()
 
-        self.evaluate(self.eval_renders_path)
+        # self.evaluate(self.eval_renders_path)
         self.color_network.train()
         if self.latent:
             self.nerf_outside.train()
@@ -248,7 +251,7 @@ class LatentPaintTrainer:
                 self.optimizer.zero_grad()
                 # pred: (H, W, color_ch)
                 pred, loss = self.train_render(i) # render ith image
-                # nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
+                nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
                 self.optimizer.step()
                 if np.random.uniform(0, 1) < 0.05:
                     # Randomly log rendered images throughout the training                
@@ -377,7 +380,7 @@ class LatentPaintTrainer:
             rays_d_batch = rays_d_batch.to(self.device)
             near, far = near_far_from_sphere(rays_o_batch, rays_d_batch)
             
-            background_rgb = torch.ones([1, self.color_ch]) if self.use_white_bkgd else None
+            background_rgb = torch.zeros([1, self.color_ch]) if self.use_white_bkgd else None
 
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
@@ -423,9 +426,19 @@ class LatentPaintTrainer:
     
     def check_all_grad(self):    
         for name, param in self.color_network.named_parameters():
+            # if param.grad is not None:
+            print(f'Layer {name} grad: ', param.grad)
             if param.grad is not None and torch.isnan(param.grad).any():
                 print(f"Layer {name} has NaN gradients")
 
+    def check_all_isnan(self):
+        has_nan = False
+        for name, param in self.color_network.named_parameters():
+            if torch.isnan(param).any():
+                print(f"Layer {name} has NaN gradients")
+                print(param)
+                has_nan = True
+        return has_nan    
 
     def train_render(self, img_idx):# , data: Dict[str, Any]):
 
@@ -456,12 +469,10 @@ class LatentPaintTrainer:
         # loss_guidance = self.diffusion.train_step(text_z, pred_latents)
 
         # for debug
-        pred.retain_grad()
-        sampled_color.retain_grad()
-        # print(pred.grad)
-        # print(sampled_color.grad)
+        # pred.retain_grad()
+        # sampled_color.retain_grad()
 
-        loss_guidance = self.diffusion.train_step(text_z, pred, params_to_train=self.params_to_train)
+        loss_guidance = self.diffusion.train_step(text_z, pred, params_to_train=list(self.color_network.parameters()))
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
         loss = -1
 
@@ -473,6 +484,9 @@ class LatentPaintTrainer:
         # print(torch.any(torch.isnan(pred.grad)))
         # print(torch.any(torch.isnan(sampled_color)))
         self.check_all_grad()
+        has_nan = self.check_all_isnan()
+        if has_nan:
+            raise NotImplementedError
         # raise NotImplementedError
 
         pred = pred
@@ -532,7 +546,7 @@ class LatentPaintTrainer:
         
         # Note: PIL use RGB, while cv2 use BGR
         # Image.fromarray(pred_rgb).save(save_path)
-        cv.imwrite(os.path.join(save_path), pred[..., -1] if self.latent else pred)
+        cv.imwrite(os.path.join(save_path), pred[..., ::-1] if self.latent else pred)
 
     # TODO: figure out how to find the color of vertices
     def validate_mesh_vertex_color(self, world_space=False, resolution=64, threshold=0.0, name=None, half=True):

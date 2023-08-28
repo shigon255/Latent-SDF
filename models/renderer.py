@@ -233,11 +233,11 @@ class GeoNeuSRenderer:
         pts = pts.reshape(-1, 3)
         dirs = dirs.reshape(-1, 3)
 
-        sdf_nn_output = sdf_network(pts)
-        sdf = sdf_nn_output[:, :1]
+        sdf_nn_output = sdf_network(pts).detach()
+        sdf = sdf_nn_output[:, :1].detach()
         feature_vector = sdf_nn_output[:, 1:]
 
-        gradients = sdf_network.gradient(pts).squeeze()
+        gradients = sdf_network.gradient(pts).squeeze().detach()
         sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter
@@ -261,6 +261,7 @@ class GeoNeuSRenderer:
         c = prev_cdf
 
         alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0)
+        
 
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples)
         inside_sphere = (pts_norm < 1.0).float().detach()
@@ -730,9 +731,12 @@ class LatentPaintRenderer:
         # print("pts----------", pts)
         # print("dirs-----------", dirs)
         # print("fatures-----------", feature_vector)
-        # sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+        
         sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, self.color_ch)
-        # print("sampled color---------",sampled_color)
+        if torch.isnan(sampled_color.any()):
+            print("sampled_color error: ", sampled_color)
+            raise NotImplementedError
+        print("sampled color---------",sampled_color)
         #sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter
@@ -754,9 +758,10 @@ class LatentPaintRenderer:
 
         p = prev_cdf - next_cdf
         c = prev_cdf
-
+        
         alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0)
 
+        alpha = alpha.detach()
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples)
         inside_sphere = (pts_norm < 1.0).float().detach()
         relax_inside_sphere = (pts_norm < 1.2).float().detach()

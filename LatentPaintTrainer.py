@@ -207,7 +207,7 @@ class LatentPaintTrainer:
 
     def init_optimizer(self, params_to_train) -> Optimizer:
         # optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
-        optimizer = torch.optim.Adam(params_to_train, lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
+        optimizer = torch.optim.Adam(params_to_train, lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-6)
         return optimizer
 
     def init_dataloaders(self) -> Dict[str, DataLoader]:
@@ -234,7 +234,7 @@ class LatentPaintTrainer:
         # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
         # self.mesh_model.train()
 
-        # self.evaluate(self.eval_renders_path)
+        self.evaluate(self.eval_renders_path)
         self.color_network.train()
         if self.latent:
             self.nerf_outside.train()
@@ -247,12 +247,14 @@ class LatentPaintTrainer:
             for i in range(self.img_dataset.n_images):
                 self.train_step += 1
                 pbar.update(1)
-                torch.autograd.set_detect_anomaly(True)
+                # torch.autograd.set_detect_anomaly(True)
                 self.optimizer.zero_grad()
                 # pred: (H, W, color_ch)
                 pred, loss = self.train_render(i) # render ith image
                 nn.utils.clip_grad_norm_(self.color_network.parameters(), 1.0)
                 self.optimizer.step()
+                # print("After step: ")
+                # self.color_network.test()
                 if np.random.uniform(0, 1) < 0.05:
                     # Randomly log rendered images throughout the training                
                     self.log_train_renders(pred, i)
@@ -425,11 +427,12 @@ class LatentPaintTrainer:
         return img_fine, sampled_color
     
     def check_all_grad(self):    
+        grad_error = False
         for name, param in self.color_network.named_parameters():
-            # if param.grad is not None:
-            print(f'Layer {name} grad: ', param.grad)
             if param.grad is not None and torch.isnan(param.grad).any():
                 print(f"Layer {name} has NaN gradients")
+                grad_error = True
+        return grad_error
 
     def check_all_isnan(self):
         has_nan = False
@@ -471,7 +474,12 @@ class LatentPaintTrainer:
         # for debug
         # pred.retain_grad()
         # sampled_color.retain_grad()
-
+        # grad_has_nan = self.check_all_grad()
+        # has_nan = self.check_all_isnan()
+        # if has_nan or grad_has_nan:
+          #   raise NotImplementedError
+        # print("Before test===================")
+        # self.color_network.test()
         loss_guidance = self.diffusion.train_step(text_z, pred, params_to_train=list(self.color_network.parameters()))
         loss = loss_guidance # Note: this loss value will be 0. The real loss value can't be calculated
         loss = -1
@@ -483,12 +491,13 @@ class LatentPaintTrainer:
         # print(sampled_color.grad)
         # print(torch.any(torch.isnan(pred.grad)))
         # print(torch.any(torch.isnan(sampled_color)))
-        self.check_all_grad()
-        has_nan = self.check_all_isnan()
-        if has_nan:
-            raise NotImplementedError
+        # grad_has_nan = self.check_all_grad()
+        # has_nan = self.check_all_isnan()
+        # if has_nan or grad_has_nan:
+          #   raise NotImplementedError
         # raise NotImplementedError
-
+        # print("After test===================")
+        # self.color_network.test()
         pred = pred
         if not self.latent:
             # (1, 3, H, W) -> (H, W, 3)

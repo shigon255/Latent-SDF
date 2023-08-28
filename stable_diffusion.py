@@ -125,8 +125,8 @@ class StableDiffusion(nn.Module):
             pred_rgb_512 = F.interpolate(inputs, (512, 512), mode='bilinear', align_corners=False)
             latents = self.encode_imgs(pred_rgb_512)
         else:
-            latents = inputs
-            # latents = F.interpolate(inputs, (64, 64), mode='bilinear', align_corners=False)
+            # latents = inputs
+            latents = F.interpolate(inputs, (64, 64), mode='bilinear', align_corners=False)
         # torch.cuda.synchronize(); print(f'[TIME] guiding: interp {time.time() - _t:.4f}s')
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
@@ -162,10 +162,10 @@ class StableDiffusion(nn.Module):
         # _t = time.time()
         # for param in params_to_train:
           #   print(param.grad)
-        print("gradient: ", grad)
-        with torch.autograd.detect_anomaly():
+        # print("gradient: ", grad)
+        # with torch.autograd.detect_anomaly():
             # latents.backward(gradient=grad, retain_graph=True)
-            latents.backward(gradient=grad, retain_graph=True)
+        latents.backward(gradient=grad, retain_graph=True)
         # torch.autograd.grad(outputs=latents, inputs=params_to_train, grad_outputs=grad)
         # for param in params_to_train:
           #   print(param.grad)

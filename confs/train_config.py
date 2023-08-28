@@ -8,8 +8,8 @@ from loguru import logger
 class RenderConfig:
     """ Parameters for the Mesh Renderer """
     # Render size for training
-    train_grid_H: int = 1024 # Note: please set to at least larger than 1000 to contain the whole object
-    train_grid_W: int = 1024
+    train_grid_H: int = 1200 # Note: please set to at least larger than 1000 to contain the whole object
+    train_grid_W: int = 1600
     # Render size for evaluating
     eval_grid_H: int = 1200
     eval_grid_W: int = 1600
@@ -53,7 +53,7 @@ class OptimConfig:
     # Total iters
     iters: int = 1000# 5000
     # Learning rate
-    lr: float = 1e-2
+    lr: float = 1e-5
     # Resume from checkpoint
     resume: bool = False
     # Load existing model

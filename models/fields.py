@@ -207,19 +207,42 @@ class RenderingNetwork(nn.Module):
             rendering_input = torch.cat([points, view_dirs, feature_vectors], dim=-1)
 
         x = rendering_input
-
+        # print("first x: ", x)
         for l in range(0, self.num_layers - 1):
             lin = getattr(self, "lin" + str(l))
 
             x = lin(x)
-
+            if torch.isnan(x).any():
+                print(f"linear output at layer {l}: ", x)
+                print("parameters: ", lin.weight, lin.bias)
+                raise NotImplementedError
             if l < self.num_layers - 2:
                 x = self.relu(x)
-
+            if torch.isnan(x).any():
+                print(f"relu output at layer {l}: ", x)
+                raise NotImplementedError
+            
         if self.squeeze_out:
             x = torch.sigmoid(x)
+        # print("final x: ", x)
         return x
 
+    def test(self):
+        lin = getattr(self, "lin0")
+        print("weights: ", lin.weight)
+        print("weights grad: ", lin.weight.grad)
+        print("bias: ", lin.bias)
+        print("bias grad", lin.bias.grad)
+        print("weights type: ", type(lin.weight))
+        print("bias type: ", type(lin.bias))
+        print("weights requires_grad: ", lin.weight.requires_grad)
+        print("bias requires_grad: ", lin.bias.requires_grad)
+        if torch.isnan(lin.weight).any() or torch.isnan(lin.bias).any()\
+            or (lin.weight.grad is not None and torch.isnan(lin.weight.grad).any())\
+            or (lin.bias.grad is not None and torch.isnan(lin.bias.grad).any()):
+            print("weight error: ", torch.isnan(lin.weight).any())
+            print("bias error: ", torch.isnan(lin.bias).any())
+            raise NotImplementedError
 
 # This implementation is borrowed from nerf-pytorch: https://github.com/yenchenlin/nerf-pytorch
 # Normal NeRF: output_ch = 4
@@ -292,7 +315,7 @@ class NeRF(nn.Module):
             h = F.relu(h)
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
-        print("first h: ", h)
+        
         if self.use_viewdirs:
             alpha = self.alpha_linear(h)
             feature = self.feature_linear(h)
@@ -301,11 +324,9 @@ class NeRF(nn.Module):
             for i, l in enumerate(self.views_linears):
                 h = self.views_linears[i](h)
                 h = F.relu(h)
-                print(f"{i}th h: ", h)
+                
 
             rgb = self.rgb_linear(h)
-            print("rgb: ", rgb)
-            print("alpha: ", alpha)
             return alpha, rgb
         else:
             assert False # enforced to use view direction

@@ -736,7 +736,7 @@ class LatentPaintRenderer:
         if torch.isnan(sampled_color.any()):
             print("sampled_color error: ", sampled_color)
             raise NotImplementedError
-        print("sampled color---------",sampled_color)
+        # print("sampled color---------",sampled_color)
         #sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 4) # latent color
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter

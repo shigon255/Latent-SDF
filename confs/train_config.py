@@ -53,7 +53,7 @@ class OptimConfig:
     # Total iters
     iters: int = 1000# 5000
     # Learning rate
-    lr: float = 1e-5
+    lr: float = 1e-4
     # Resume from checkpoint
     resume: bool = False
     # Load existing model
@@ -104,7 +104,7 @@ class NeusConfig:
     mcube_threshold: float = 0.0
     is_continue: bool = False
     checkpoint: int = 0
-    case: str = 'scan37'
+    case: str = 'scan55'
     suffix: str = ''
     dilation: int = 15
 

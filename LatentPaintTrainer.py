@@ -16,7 +16,6 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm import tqdm
 from pyhocon import ConfigFactory
-from gpu_mem_track import MemTracker
 import inspect
 import trimesh
 

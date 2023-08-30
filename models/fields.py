@@ -313,6 +313,10 @@ class NeRF(nn.Module):
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
+            if torch.isnan(h).any():
+                print(f"linear output at layer {l}: ", h)
+                print("parameters: ", self.pts_linears[i].weight, self.pts_linears[i].bias)
+                raise NotImplementedError
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
         
@@ -322,11 +326,19 @@ class NeRF(nn.Module):
             h = torch.cat([feature, input_views], -1)
 
             for i, l in enumerate(self.views_linears):
+                if torch.isnan(h).any():
+                    print(f"view linear output at layer {l}: ", h)
+                    print("parameters: ", self.feature_linear[i].weight, self.feature_linear[i].bias)
+                    raise NotImplementedError
                 h = self.views_linears[i](h)
                 h = F.relu(h)
                 
 
             rgb = self.rgb_linear(h)
+            if torch.isnan(rgb).any():
+                print("rgb error")
+                raise NotImplementedError
+
             return alpha, rgb
         else:
             assert False # enforced to use view direction

@@ -100,7 +100,7 @@ class LatentPaintTrainer:
         # params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.color_network.parameters())
         # if self.latent:
-          #   params_to_train += list(self.nerf_outside.parameters())
+        #     params_to_train += list(self.nerf_outside.parameters())
 
         for param in self.color_network.parameters():
             param.requires_grad = True
@@ -230,7 +230,7 @@ class LatentPaintTrainer:
         logger.info('Starting training ^_^')
         
         # Evaluate the initialization
-        
+        torch.autograd.set_detect_anomaly(True)
         # self.evaluate(self.dataloaders['val'], self.eval_renders_path)
         # self.mesh_model.train()
 
@@ -247,7 +247,6 @@ class LatentPaintTrainer:
             for i in range(self.img_dataset.n_images):
                 self.train_step += 1
                 pbar.update(1)
-                # torch.autograd.set_detect_anomaly(True)
                 self.optimizer.zero_grad()
                 # pred: (H, W, color_ch)
                 pred, loss = self.train_render(i) # render ith image

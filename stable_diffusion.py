@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
+from PIL import Image
+import cv2
 
 import time
 
@@ -43,7 +45,7 @@ class StableDiffusion(nn.Module):
         # 2. Load the tokenizer and text encoder to tokenize and encode the text. 
         # self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
         self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+        self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
         self.image_encoder = None
         self.image_processor = None
 
@@ -232,10 +234,10 @@ class StableDiffusion(nn.Module):
         latents = self.produce_latents(text_embeds, height=height, width=width, latents=latents, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale) # [1, 4, 64, 64]
         
         # Img latents -> imgs
-        imgs = self.decode_latents(latents) # [1, 3, 512, 512]
+        imgs = self.decode_latents(latents.half()) # [1, 3, 512, 512]
 
         # Img to Numpy
-        imgs = imgs.detach().cpu().permute(0, 2, 3, 1).numpy()
+        imgs = imgs.detach().cpu().permute(0, 2, 3, 1).squeeze(0).numpy()
         imgs = (imgs * 255).round().astype('uint8')
 
         return imgs
@@ -247,18 +249,23 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('prompt', type=str)
+    parser.add_argument('--prompt', type=str)
     parser.add_argument('-H', type=int, default=512)
     parser.add_argument('-W', type=int, default=512)
     parser.add_argument('--steps', type=int, default=50)
+    parser.add_argument('--num', type=int, default=1)
     opt = parser.parse_args()
 
-    device = torch.device('cuda:1')
+    device = torch.device('cuda:0')
 
     sd = StableDiffusion(device)
+    imgs = []
+    for i in range(opt.num):
+        img = sd.prompt_to_img(opt.prompt, opt.H, opt.W, opt.steps)
+        imgs.append(img)
 
-    imgs = sd.prompt_to_img(opt.prompt, opt.H, opt.W, opt.steps)
-
+    for i, img in enumerate(imgs):
+        cv2.imwrite(f'stb_{i}.png', cv2.cvtColor(img, cv2.COLOR_RGB2BGR)) 
     # visualize image
     # plt.imshow(imgs[0])
     # plt.show()

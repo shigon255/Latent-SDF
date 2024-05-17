@@ -19,30 +19,18 @@ class RenderConfig:
     angle_overhead: float = 30
     # Define the front angle region
     angle_front: float = 70
-    # Which NeRF backbone to use
-    backbone: str = 'texture-mesh'
 
 @dataclass
 class GuideConfig:
     """ Parameters defining the guidance """
     # Guiding text prompt
     text: str
-    # The mesh to paint
-    shape_path: str = '~/latent-nerf/shapes/animal.obj'
     # Append direction to text prompts
     append_direction: bool = False # True
     # A Textual-Inversion concept to use
     concept_name: Optional[str] = None
     # A huggingface diffusion model to use
     diffusion_name: str = 'CompVis/stable-diffusion-v1-4'
-    # Scale of mesh in 1x1x1 cube
-    shape_scale: float = 0.6
-    # height of mesh
-    dy: float = 0.25
-    # texture image resolution
-    texture_resolution=128
-    # texture mapping interpolation mode from texture image, options: 'nearest', 'bilinear', 'bicubic'
-    texture_interpolation_mode: str= 'nearest'
 
 
 @dataclass

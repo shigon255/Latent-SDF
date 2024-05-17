@@ -41,9 +41,8 @@ class LatentPaintTrainer:
         self.train_step = 0
         self.device = torch.device(cfg.global_setting.gpu)
         self.half = cfg.global_setting.half
-        # self.latent = cfg.global_setting.latent
-        self.latent = True # for latent = False(pixel based), there might be some connection bug
-        self.color_ch = 4 if self.latent else 3
+        self.latent = cfg.global_setting.latent
+        self.color_ch = 4 if self.latent else 3 
 
         # load neus config
         self.neus_cfg_path = cfg.neus.neus_cfg_path
@@ -75,12 +74,12 @@ class LatentPaintTrainer:
 
         # networks
         if self.half:
-            self.nerf_outside = NeRF(**self.neus_cfg[model_name+'.nerf']).half().to(self.device)
+            # self.nerf_outside = NeRF(**self.neus_cfg[model_name+'.nerf']).half().to(self.device)
             self.color_network = RenderingNetwork(**self.neus_cfg[model_name+'.rendering_network']).half().to(self.device)
             self.deviation_network = SingleVarianceNetwork(**self.neus_cfg[model_name+'.variance_network']).half().to(self.device)
             self.sdf_network = SDFNetwork(**self.neus_cfg[model_name+'.sdf_network']).half().to(self.device)
         else:
-            self.nerf_outside = NeRF(**self.neus_cfg[model_name+'.nerf']).to(self.device)
+            # self.nerf_outside = NeRF(**self.neus_cfg[model_name+'.nerf']).to(self.device)
             self.color_network = RenderingNetwork(**self.neus_cfg[model_name+'.rendering_network']).to(self.device)
             self.deviation_network = SingleVarianceNetwork(**self.neus_cfg[model_name+'.variance_network']).to(self.device)
             self.sdf_network = SDFNetwork(**self.neus_cfg[model_name+'.sdf_network']).to(self.device)
@@ -88,24 +87,20 @@ class LatentPaintTrainer:
         self.sdf_network.eval()
         self.deviation_network.eval()
         self.color_network.train()
-        if self.latent:
-            self.nerf_outside.train()
-        else:
-            self.nerf_outside.eval()
-        self.sdf_network.freeze() # can not freeze, because gradient need to be calculated
-        self.deviation_network.freeze()
-        params_to_train = []
-        # params_to_train += list(self.nerf_outside.parameters())
-        # params_to_train += list(self.deviation_network.parameters())
-        params_to_train += list(self.color_network.parameters())
         # if self.latent:
-        #     params_to_train += list(self.nerf_outside.parameters())
+        #     self.nerf_outside.train()
+        # else:
+        #     self.nerf_outside.eval()
+        # self.sdf_network.freeze() 
+        # self.deviation_network.freeze()
+        params_to_train = []
+        params_to_train += list(self.color_network.parameters())
 
         for param in self.color_network.parameters():
             param.requires_grad = True
 
         self.params_to_train = params_to_train
-        self.renderer = LatentPaintRenderer(self.nerf_outside, 
+        self.renderer = LatentPaintRenderer(# self.nerf_outside, 
                                                 self.sdf_network,
                                                 self.deviation_network,
                                                 self.color_network,
@@ -282,11 +277,10 @@ class LatentPaintTrainer:
 
     def evaluate(self, save_path: Path, full_eval: bool = False):
         logger.info(f'Evaluating and saving model, iteration #{self.train_step}...')
-        # self.mesh_model.eval()
 
         self.color_network.eval()
-        if self.latent:
-            self.nerf_outside.eval()
+        # if self.latent:
+        #     self.nerf_outside.eval()
         save_path.mkdir(exist_ok=True)
 
         eval_size = self.eval_size
@@ -294,16 +288,27 @@ class LatentPaintTrainer:
             logger.info("Start full evaluation")
             all_preds = []
             eval_size = self.full_eval_size
+            for i in range(eval_size):
+                img_idx = i
+                
+                # pred: (H, W, color_Ch) tensor
+                pred, textures = self.eval_render(img_idx=img_idx) # note that textures contain dummy value
+
+                if self.latent:
+                    # encode latent into rgb
+                    # (H, W, 4) -> (1, 4, H, W)
+                    pred = pred.permute(2, 0, 1).unsqueeze(0)
+                    # (1, 4, H, W)-> (train_grid_size, train_grid_size, 3)
+                    pred = self.diffusion.decode_latents(pred).permute(0, 2, 3, 1).contiguous().squeeze(0)
+
+                pred_cpu = pred.detach().cpu()
+                del pred
+                pred_cpu = tensor2numpy(pred_cpu)
+
+                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_cpu[..., ::-1] if self.latent else pred_cpu)
         else:
             logger.info("Start normal evaluation")
-        
-        # render eval_size images at random views from NeuS dataset
-        for i in range(eval_size):
-            if not full_eval:
-                img_idx = np.random.randint(self.img_dataset.n_images)
-            else:
-                img_idx = i
-            
+            img_idx = np.random.randint(self.img_dataset.n_images)
             # pred: (H, W, color_Ch) tensor
             pred, textures = self.eval_render(img_idx=img_idx) # note that textures contain dummy value
 
@@ -318,55 +323,20 @@ class LatentPaintTrainer:
             del pred
             pred_cpu = tensor2numpy(pred_cpu)
 
-            if full_eval:
-                all_preds.append(pred_cpu)
-            else:   
-                cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_cpu[..., ::-1] if self.latent else pred_cpu)
-
+            cv.imwrite(os.path.join(save_path, f"step_{self.train_step:05d}_{i:04d}_rgb.png"), pred_cpu[..., ::-1] if self.latent else pred_cpu)
+        
         # also store mesh
         self.validate_mesh_vertex_color(world_space=True, resolution=512, threshold=self.cfg.log.mcube_threshold, half=self.cfg.global_setting.half)
-        '''
-        Project
-        No texture can be shown/saved
-        '''
-        # Texture map is the same, so just take the last result
-        # texture = tensor2numpy(textures[0])
-        # Image.fromarray(texture).save(save_path / f"step_{self.train_step:05d}_texture.png")
 
-        if full_eval:
-            all_preds = np.stack(all_preds, axis=0)
-
-            dump_vid = lambda video, name: imageio.mimsave(save_path / f"step_{self.train_step:05d}_{name}.mp4", video, fps=25,
-                                                           quality=8, macro_block_size=1)
-
-            dump_vid(all_preds, 'rgb')
-        
         logger.info('Done!')
 
     def full_eval(self):
         try:
-            # self.evaluate(self.dataloaders['val_large'], self.final_renders_path, save_as_video=True)
             self.evaluate(self.final_renders_path, full_eval=True)
         except:
-            logger.error('failed to save result video')
-        '''
-        if self.cfg.log.save_mesh:
-            save_path = make_path(self.exp_path / 'mesh')
-            logger.info(f"Saving mesh to {save_path}")
-
-            self.mesh_model.export_mesh(save_path, guidance=self.diffusion)
-
-            logger.info(f"\tDone!")
-        '''
+            logger.error('failed to do full evaluation')
 
     def render_single_image(self, img_H, img_W, resolution_level, is_train, img_idx):
-        # abandon using view dataset
-        # if self.cfg.optim.use_neus_view:
-          #   rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(img_idx, H=img_H, W=img_W, resolution_level=resolution_level)
-        # else:
-          #   rays_o, rays_d = gen_random_ray_at_pose(theta, phi, radius, H=img_H, W=img_W, intrincis_inv=self.intrinsic_inv, resolution_level=resolution_level, half=self.half)
-
-        # generate ray from thie view
         rays_o, rays_d, intrinsic, intrinsic_inv, pose, image_gray = self.img_dataset.gen_rays_at(img_idx, H=img_H, W=img_W, resolution_level=resolution_level)
         
         H, W, _ = rays_o.shape
@@ -388,11 +358,7 @@ class LatentPaintTrainer:
                                               far,
                                               # cos_anneal_ratio=self.get_cos_anneal_ratio(), # skip cosine annealing
                                               cos_anneal_ratio=0.5, # skip cosine annealing
-                                              background_rgb=background_rgb,
-                                              intrinsics=intrinsic,
-                                              intrinsics_inv=intrinsic_inv,
-                                              poses=pose,
-                                              images=image_gray)
+                                              background_rgb=background_rgb)
           
             # training: return torch tensor
             # testing: return detached tensor
@@ -442,11 +408,6 @@ class LatentPaintTrainer:
         return has_nan    
 
     def train_render(self, img_idx):# , data: Dict[str, Any]):
-
-        # abandon view dataset
-        # theta = data['theta'] 
-        # phi = data['phi']
-        # radius = data['radius']
         
         # pred: (H, W, color_ch)
         # Note: sampled_color for debug
@@ -511,30 +472,13 @@ class LatentPaintTrainer:
         '''
         create the latent image
         '''
-        # abandon view from viewdataset
-        # theta = data['theta']
-        # phi = data['phi']
-        # radius = data['radius']
-
-        # dim = self.cfg.render.eval_grid_size
-        # outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, decode_func=self.diffusion.decode_latents,
-          #                                test=True ,dims=(dim,dim))
-        # pred_rgb = outputs['image'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
 
         # pred: (H, W, color_ch)
         pred, _ = self.render_single_image(img_H=self.eval_H, img_W=self.eval_W, resolution_level=self.neus_cfg['train.validate_resolution_level'], is_train=False, img_idx=img_idx)        
 
-        # texture_rgb = outputs['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-
         return pred, -1  
 
     def log_train_renders(self, pred: torch.Tensor, img_idx):
-        # if self.mesh_model.latent_mode:
-          #   pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()  # [1, 3, H, W]
-        # else:
-          #   pred_rgb = preds.permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        # (1, 4, train_grid_size, train_grid_size) -> (train_grid_size, train_grid_size, 3)
-        # pred_rgb = self.diffusion.decode_latents(preds).permute(0, 2, 3, 1).contiguous()
 
         logger.info(f"log image {img_idx} at step {self.train_step}")
         # pred: 
@@ -609,8 +553,6 @@ class LatentPaintTrainer:
         # NeRF, variance, and radiance network should not be loaded
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
-        # self.nerf_outside.load_state_dict(checkpoint['nerf']) # assume that this checkpoint is saved from Geo-NeuS
-        # self.color_network.load_state_dict(checkpoint['color_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
         self.deviation_network.load_state_dict(checkpoint['variance_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
 
         logger.info('End')
@@ -621,7 +563,7 @@ class LatentPaintTrainer:
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine']) # assume that this checkpoint is saved from Geo-NeuS
         self.color_network.load_state_dict(checkpoint['color_network_fine'])
-        self.nerf_outside.load_state_dict(checkpoint['nerf'])
+        # self.nerf_outside.load_state_dict(checkpoint['nerf'])
         self.deviation_network.load_state_dict(checkpoint['variance_network_fine'])
 
         logger.info('End')
@@ -645,34 +587,11 @@ class LatentPaintTrainer:
                                             mode='bilinear', align_corners=False)
             return decoded_texture
         # load network
-        self.nerf_outside.load_state_dict(checkpoint_dict['latent_nerf'])
+        # self.nerf_outside.load_state_dict(checkpoint_dict['latent_nerf'])
         self.sdf_network.load_state_dict(checkpoint_dict['latent_sdf_network_fine'])
         self.deviation_network.load_state_dict(checkpoint_dict['latent_variance_network_fine'])
         self.color_network.load_state_dict(checkpoint_dict['latent_color_network_fine'])
-        '''
-        if 'model' not in checkpoint_dict:
-            if not self.mesh_model.latent_mode:
-                # initialize the texture rgb image from the latent texture image
-                checkpoint_dict['texture_img_rgb_finetune'] = decode_texture_img(checkpoint_dict['texture_img'])
-            self.mesh_model.load_state_dict(checkpoint_dict)
-            logger.info("loaded model.")
-            return
 
-        if not self.mesh_model.latent_mode:
-            # initialize the texture rgb image from the latent texture image
-            checkpoint_dict['model']['texture_img_rgb_finetune'] = \
-            decode_texture_img(checkpoint_dict['model']['texture_img'])
-
-        missing_keys, unexpected_keys = self.mesh_model.load_state_dict(checkpoint_dict['model'], strict=False)
-        logger.info("loaded model.")
-        if len(missing_keys) > 0:
-            logger.warning(f"missing keys: {missing_keys}")
-        if len(unexpected_keys) > 0:
-            logger.warning(f"unexpected keys: {unexpected_keys}")
-
-        if model_only:
-            return
-        '''
         self.past_checkpoints = checkpoint_dict['checkpoints']
         self.train_step = checkpoint_dict['train_step'] + 1
         logger.info(f"load at step {self.train_step}")
@@ -697,7 +616,7 @@ class LatentPaintTrainer:
             state['optimizer'] = self.optimizer.state_dict()
 
         # state['model'] = self.mesh_model.state_dict()
-        state['latent_nerf'] = self.nerf_outside.state_dict()
+        # state['latent_nerf'] = self.nerf_outside.state_dict()
         state['latent_sdf_network_fine'] = self.sdf_network.state_dict(),
         state['latent_variance_network_fine'] = self.deviation_network.state_dict(),
         state['latent_color_network_fine'] = self.color_network.state_dict(),
